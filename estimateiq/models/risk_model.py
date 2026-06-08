@@ -46,8 +46,8 @@ def _assign_risk_label(df: pd.DataFrame) -> np.ndarray:
     return risk
 
 
-def _prepare_features(df: pd.DataFrame, embeddings: np.ndarray, encoders: dict | None = None):
-    """Feature-Matrix aufbauen (analog zu cost_model, mit Risikomodell-Spalten)."""
+def _prepare_features(df: pd.DataFrame, encoders: dict | None = None):
+    """Feature-Matrix aufbauen (keine BERT-Embeddings in v1)."""
     fit_mode = encoders is None
     if fit_mode:
         encoders = {}
@@ -74,13 +74,11 @@ def _prepare_features(df: pd.DataFrame, embeddings: np.ndarray, encoders: dict |
             vals = pd.to_numeric(df[col], errors="coerce").fillna(0).values.reshape(-1, 1)
             parts.append(vals.astype(np.float32))
 
-    parts.append(embeddings.astype(np.float32))
-
     X = np.hstack(parts)
     return X, encoders
 
 
-def train(df: pd.DataFrame, embeddings: np.ndarray) -> dict:
+def train(df: pd.DataFrame) -> dict:
     """
     Trainiert den Random-Forest-Klassifikator.
     Gibt Evaluationsmetriken zurück.
@@ -88,7 +86,7 @@ def train(df: pd.DataFrame, embeddings: np.ndarray) -> dict:
     df_train = df.reset_index(drop=True)
     y = _assign_risk_label(df_train)
 
-    X, encoders = _prepare_features(df_train, embeddings)
+    X, encoders = _prepare_features(df_train)
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.15, random_state=42, stratify=y)
 
     # Klassengewichte für unbalancierte Verteilung
@@ -116,14 +114,14 @@ def train(df: pd.DataFrame, embeddings: np.ndarray) -> dict:
     return {"accuracy": accuracy, "n_train": len(X_train), "n_val": len(X_val), "classes": classes.tolist()}
 
 
-def predict(df: pd.DataFrame, embeddings: np.ndarray) -> dict:
+def predict(df: pd.DataFrame) -> dict:
     """
     Gibt Risikoklasse (int) und Wahrscheinlichkeiten pro Klasse zurück.
     """
     model = joblib.load(MODEL_PATH)
     encoders = joblib.load(ENCODERS_PATH)
 
-    X, _ = _prepare_features(df, embeddings, encoders=encoders)
+    X, _ = _prepare_features(df, encoders=encoders)
     classes = model.predict(X)
     probas = model.predict_proba(X)
 

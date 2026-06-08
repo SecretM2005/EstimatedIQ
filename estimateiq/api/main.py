@@ -13,7 +13,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
-from estimateiq.models.bert_extractor import extract_embeddings
 from estimateiq.models.cost_model import predict as predict_cost
 from estimateiq.models.risk_model import predict as predict_risk
 
@@ -75,8 +74,8 @@ async def lifespan(app: FastAPI):
     """Modelle beim Start vorladen, um beim ersten Request keine Verzögerung zu haben."""
     logger.info("Lade Modelle beim Start...")
     try:
-        # BERT-Modell einmalig initialisieren (lru_cache)
-        extract_embeddings(["Initialisierungstext"])
+        from estimateiq.models.cost_model import _lade_modell
+        _lade_modell()
         logger.info("Modelle erfolgreich geladen.")
     except Exception as exc:
         logger.warning("Modelle nicht vorhanden, werden bei Bedarf geladen: %s", exc)
@@ -127,7 +126,8 @@ def _request_to_dataframe(req: EstimateRequest) -> pd.DataFrame:
         "budget_eur": None,
         "dauer_tage": req.duration_days,
         "land": req.country or "DE",
-        "cpv_code": req.cpv_code or 72000000,
+        "cpv_code": f"{req.cpv_code or 72000000:08d}",
+        "projekttyp": _cpv_to_category(req.cpv_code),
     }])
 
 
@@ -139,7 +139,8 @@ def _request_to_dataframe(req: EstimateRequest) -> pd.DataFrame:
 async def health_check():
     """Liefert den Betriebsstatus der API."""
     try:
-        extract_embeddings(["test"])
+        from estimateiq.models.cost_model import _lade_modell
+        _lade_modell()
         models_ok = True
     except Exception:
         models_ok = False
@@ -158,17 +159,13 @@ async def estimate(req: EstimateRequest):
     """
     try:
         df = _request_to_dataframe(req)
-        text = f"{req.title} {req.description}".strip()
 
-        # BERT-Embeddings berechnen
-        embeddings = extract_embeddings([text])
-
-        # Kostenschätzung
-        cost_predictions = predict_cost(df, embeddings)
+        # Kostenschätzung (v1: rein numerisch, kein BERT)
+        cost_predictions = predict_cost(df)
         estimated_cost = float(cost_predictions[0])
 
         # Risikoanalyse
-        risk_result = predict_risk(df, embeddings)
+        risk_result = predict_risk(df)
         risk_class = int(risk_result["risk_class"][0])
         risk_label = risk_result["risk_label"][0]
         probas = risk_result["probabilities"][0]
