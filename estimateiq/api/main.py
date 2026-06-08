@@ -1,0 +1,210 @@
+"""
+EstimateIQ FastAPI – REST-Schnittstelle für Kostenschätzung und Risikoanalyse.
+Hauptendpoint: POST /api/estimate
+"""
+
+import logging
+from contextlib import asynccontextmanager
+from typing import Annotated
+
+import numpy as np
+import pandas as pd
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, field_validator
+
+from estimateiq.models.bert_extractor import extract_embeddings
+from estimateiq.models.cost_model import predict as predict_cost
+from estimateiq.models.risk_model import predict as predict_risk
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Request / Response Schemas
+# ---------------------------------------------------------------------------
+
+class EstimateRequest(BaseModel):
+    """Eingabe für eine Kostenschätzung."""
+    title: Annotated[str, Field(min_length=5, max_length=1000, description="Titel der Ausschreibung")]
+    description: Annotated[str, Field(min_length=10, max_length=10000, description="Ausschreibungstext")]
+    cpv_code: Annotated[int | None, Field(None, ge=72000000, le=72900000, description="CPV-Code (IT: 72000000–72900000)")]
+    country: Annotated[str | None, Field(None, max_length=2, description="Ländercode (DE, AT, CH, ...)")]
+    duration_days: Annotated[int | None, Field(None, ge=1, le=3650, description="Geplante Laufzeit in Tagen")]
+    contract_type: Annotated[str | None, Field(None, description="Auftragsart (z. B. 'Dienstleistung')")]
+    procedure_type: Annotated[str | None, Field(None, description="Verfahrensart")]
+    authority_type: Annotated[str | None, Field(None, description="Auftraggeber-Typ")]
+
+    @field_validator("country")
+    @classmethod
+    def uppercase_country(cls, v: str | None) -> str | None:
+        return v.upper() if v else v
+
+
+class RiskDetail(BaseModel):
+    """Risikoklassifikation mit Wahrscheinlichkeiten."""
+    risk_class: int
+    risk_label: str
+    probability_low: float
+    probability_medium: float
+    probability_high: float
+
+
+class EstimateResponse(BaseModel):
+    """Antwort mit Kostenschätzung und Risikoanalyse."""
+    estimated_cost_eur: float = Field(description="Geschätzter Auftragswert in EUR")
+    cost_range_low_eur: float = Field(description="Untere Schranke (–20 %)")
+    cost_range_high_eur: float = Field(description="Obere Schranke (+35 %)")
+    risk: RiskDetail
+    cpv_category: str
+    model_version: str = "1.0.0"
+
+
+class HealthResponse(BaseModel):
+    status: str
+    models_loaded: bool
+
+
+# ---------------------------------------------------------------------------
+# App-Initialisierung
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Modelle beim Start vorladen, um beim ersten Request keine Verzögerung zu haben."""
+    logger.info("Lade Modelle beim Start...")
+    try:
+        # BERT-Modell einmalig initialisieren (lru_cache)
+        extract_embeddings(["Initialisierungstext"])
+        logger.info("Modelle erfolgreich geladen.")
+    except Exception as exc:
+        logger.warning("Modelle nicht vorhanden, werden bei Bedarf geladen: %s", exc)
+    yield
+
+
+app = FastAPI(
+    title="EstimateIQ API",
+    description="ML-basierte Kostenschätzung für IT-Ausschreibungen im DACH-Raum",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Hilfsfunktionen
+# ---------------------------------------------------------------------------
+
+def _cpv_to_category(cpv_code: int | None) -> str:
+    """Vereinfachte Zuordnung CPV → Kategoriename (ohne Import des gesamten Preprocessors)."""
+    if cpv_code is None:
+        return "unbekannt"
+    ranges = {
+        "software": (72200000, 72299999),
+        "beratung": (72300000, 72399999),
+        "infrastruktur": (72400000, 72499999),
+        "wartung": (72500000, 72699999),
+        "sicherheit": (72700000, 72799999),
+    }
+    for name, (lo, hi) in ranges.items():
+        if lo <= cpv_code <= hi:
+            return name
+    return "sonstiges_it"
+
+
+def _request_to_dataframe(req: EstimateRequest) -> pd.DataFrame:
+    """Wandelt eine EstimateRequest in einen einzeiligen DataFrame um."""
+    return pd.DataFrame([{
+        "cpv_code": req.cpv_code or 72000000,
+        "cpv_category": _cpv_to_category(req.cpv_code),
+        "country": req.country or "DE",
+        "duration_days": req.duration_days,
+        "contract_type": req.contract_type,
+        "procedure_type": req.procedure_type,
+        "authority_type": req.authority_type,
+        "estimated_value_eur": None,
+        "has_value": False,
+        "text_combined": f"{req.title} {req.description}",
+    }])
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/health", response_model=HealthResponse, tags=["System"])
+async def health_check():
+    """Liefert den Betriebsstatus der API."""
+    try:
+        extract_embeddings(["test"])
+        models_ok = True
+    except Exception:
+        models_ok = False
+    return HealthResponse(status="ok", models_loaded=models_ok)
+
+
+@app.post("/api/estimate", response_model=EstimateResponse, tags=["Schätzung"])
+async def estimate(req: EstimateRequest):
+    """
+    Schätzt Projektkosten und Risiko für eine IT-Ausschreibung.
+
+    - **title**: Ausschreibungstitel
+    - **description**: Volltext der Ausschreibung
+    - **cpv_code**: CPV-Code (optional, IT-Bereich 72000000–72900000)
+    - **country**: Ländercode (optional, Standard: DE)
+    """
+    try:
+        df = _request_to_dataframe(req)
+        text = f"{req.title} {req.description}"
+
+        # BERT-Embeddings berechnen
+        embeddings = extract_embeddings([text])
+
+        # Kostenschätzung
+        cost_predictions = predict_cost(df, embeddings)
+        estimated_cost = float(cost_predictions[0])
+
+        # Risikoanalyse
+        risk_result = predict_risk(df, embeddings)
+        risk_class = int(risk_result["risk_class"][0])
+        risk_label = risk_result["risk_label"][0]
+        probas = risk_result["probabilities"][0]
+
+        # Auffüllen auf 3 Klassen, falls Modell weniger kennt
+        while len(probas) < 3:
+            probas.append(0.0)
+
+        return EstimateResponse(
+            estimated_cost_eur=round(estimated_cost, 2),
+            cost_range_low_eur=round(estimated_cost * 0.80, 2),
+            cost_range_high_eur=round(estimated_cost * 1.35, 2),
+            risk=RiskDetail(
+                risk_class=risk_class,
+                risk_label=risk_label,
+                probability_low=round(probas[0], 4),
+                probability_medium=round(probas[1], 4),
+                probability_high=round(probas[2], 4),
+            ),
+            cpv_category=_cpv_to_category(req.cpv_code),
+        )
+
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Modell nicht trainiert. Bitte zuerst Training durchführen. ({exc})",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Fehler bei Schätzung: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Interner Fehler: {exc}") from exc
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("estimateiq.api.main:app", host="0.0.0.0", port=8000, reload=True)
