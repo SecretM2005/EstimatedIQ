@@ -1,8 +1,15 @@
 """
-Datenvorverarbeitung: Lädt rohe TED-Notices aus fetch_ted.py,
-bereinigt sie und gibt einen sauberen DataFrame mit genau 6 Spalten zurück:
+Datenvorverarbeitung für EstimateIQ.
 
-    titel, beschreibung, budget_eur, dauer_tage, land, cpv_code
+Pipeline:
+  1. Rohdaten aus fetch_ted.py laden (JSON Lines)
+  2. Texte bereinigen (HTML, Whitespace)
+  3. CPV-Code parsen & Projekttyp ableiten
+  4. Budget zu EUR normalisieren
+  5. Laufzeit in Tagen berechnen
+  6. Ausreißer & fehlende Pflichtfelder behandeln
+  7. Als CSV + Parquet unter data/processed/ speichern
+  8. Statistik ausgeben
 """
 
 import json
@@ -18,47 +25,87 @@ logger = logging.getLogger(__name__)
 # Konfiguration
 # ---------------------------------------------------------------------------
 
-# Budgetgrenzen: Ausreißer außerhalb dieses Bereichs werden auf NaN gesetzt
-BUDGET_MIN_EUR = 5_000
-BUDGET_MAX_EUR = 500_000_000
+BUDGET_MIN_EUR = 5_000        # Ausreißer-Untergrenze
+BUDGET_MAX_EUR = 500_000_000  # Ausreißer-Obergrenze
+DAUER_MIN_TAGE = 7            # Kürzeste sinnvolle Laufzeit
+DAUER_MAX_TAGE = 3_650        # Längste sinnvolle Laufzeit (10 Jahre)
+TITEL_MIN_ZEICHEN = 10
+BESCHREIBUNG_MIN_ZEICHEN = 30
 
-# Laufzeitgrenzen in Tagen (1 Woche bis 10 Jahre)
-DAUER_MIN_TAGE = 7
-DAUER_MAX_TAGE = 3_650
-
-# Währungsumrechnungskurse zu EUR (Jahresdurchschnitt 2024, näherungsweise)
+# Jahresdurchschnittskurse 2024 (näherungsweise), alle → EUR
 FX_ZU_EUR: dict[str, float] = {
     "EUR": 1.000,
     "CHF": 1.050,
+    "GBP": 1.170,
+    "USD": 0.930,
     "DKK": 0.134,
     "SEK": 0.088,
     "NOK": 0.086,
     "PLN": 0.232,
     "CZK": 0.040,
     "HUF": 0.0026,
-    "GBP": 1.170,
-    "USD": 0.930,
     "RON": 0.201,
     "BGN": 0.511,
     "HRK": 0.133,
+    "TRY": 0.029,
+    "RSD": 0.0085,
 }
 
-# Mindestlängen für Text-Felder (kürzere Einträge sind zu dünn für BERT)
-TITEL_MIN_ZEICHEN = 10
-BESCHREIBUNG_MIN_ZEICHEN = 30
+# CPV-Bereich → Projekttyp-Label
+# Reihenfolge: spezifischste Ranges zuerst
+CPV_PROJEKTTYPEN: list[tuple[range, str]] = [
+    (range(72200000, 72300000), "Softwareentwicklung"),
+    (range(72300000, 72400000), "Datenverarbeitung & Analytics"),
+    (range(72400000, 72500000), "Internet- & Cloud-Dienste"),
+    (range(72500000, 72600000), "IT-Betrieb & Wartung"),
+    (range(72600000, 72700000), "IT-Beratung & Support"),
+    (range(72700000, 72800000), "Netzwerk & Infrastruktur"),
+    (range(72800000, 72900000), "IT-Prüfung & Testing"),
+    (range(72900000, 72999999), "Datenmigration & Backup"),
+    (range(72000000, 72200000), "IT-Hardware & Systeme"),
+]
 
 
 # ---------------------------------------------------------------------------
-# Hilfsfunktionen
+# Schritt 1 – Laden
+# ---------------------------------------------------------------------------
+
+def lade_rohdaten(pfad: str | Path) -> list[dict]:
+    """Lädt eine JSON-Lines-Datei zeilenweise. Jede Zeile = ein TedNotice-Dict."""
+    pfad = Path(pfad)
+    if not pfad.exists():
+        raise FileNotFoundError(f"Rohdaten nicht gefunden: {pfad}")
+
+    datensaetze: list[dict] = []
+    fehlerhafte_zeilen = 0
+
+    with pfad.open(encoding="utf-8") as f:
+        for i, zeile in enumerate(f, start=1):
+            zeile = zeile.strip()
+            if not zeile:
+                continue
+            try:
+                datensaetze.append(json.loads(zeile))
+            except json.JSONDecodeError:
+                fehlerhafte_zeilen += 1
+                logger.warning("Zeile %d: ungültiges JSON, übersprungen.", i)
+
+    logger.info(
+        "[Laden] %d Datensätze geladen, %d fehlerhafte Zeilen übersprungen.",
+        len(datensaetze), fehlerhafte_zeilen,
+    )
+    return datensaetze
+
+
+# ---------------------------------------------------------------------------
+# Schritt 2 – Hilfsfunktionen für Einzelfelder
 # ---------------------------------------------------------------------------
 
 def _bereinige_text(text: str | None) -> str:
-    """Entfernt HTML-Tags, normalisiert Whitespace, trimmt."""
+    """Entfernt HTML-Tags, dekodiert Entitäten, normalisiert Whitespace."""
     if not text:
         return ""
-    # HTML-Tags entfernen
     text = re.sub(r"<[^>]+>", " ", text)
-    # HTML-Entitäten dekodieren (einfachste Fälle)
     text = (
         text
         .replace("&amp;", "&")
@@ -66,219 +113,334 @@ def _bereinige_text(text: str | None) -> str:
         .replace("&gt;", ">")
         .replace("&nbsp;", " ")
         .replace("&quot;", '"')
+        .replace("&#39;", "'")
     )
-    # Mehrfach-Whitespace auf ein Leerzeichen reduzieren
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def _parse_cpv(cpv_roh: str | None) -> int | None:
+def _parse_cpv(cpv_roh: str | None) -> str | None:
     """
-    Extrahiert den 8-stelligen CPV-Code als Integer.
-    Akzeptiert Formate wie '72263000', '72263000-9', 'CPV 72263000'.
+    Extrahiert den 8-stelligen CPV-Code als nullgefüllten String.
+    Akzeptiert: '72263000', '72263000-9', 'CPV 72263000', 72263000 (int).
     """
-    if not cpv_roh:
+    if cpv_roh is None:
         return None
     treffer = re.search(r"\b(\d{8})\b", str(cpv_roh))
-    return int(treffer.group(1)) if treffer else None
+    if not treffer:
+        return None
+    code = int(treffer.group(1))
+    # Nur IT-Bereich durchlassen
+    if not (72_000_000 <= code <= 72_999_999):
+        return None
+    return f"{code:08d}"
+
+
+def _cpv_zu_projekttyp(cpv_str: str | None) -> str:
+    """Leitet den Projekttyp anhand des CPV-Codes ab."""
+    if not cpv_str:
+        return "Sonstige IT"
+    try:
+        code = int(cpv_str)
+    except ValueError:
+        return "Sonstige IT"
+    for bereich, label in CPV_PROJEKTTYPEN:
+        if code in bereich:
+            return label
+    return "Sonstige IT"
 
 
 def _budget_zu_eur(wert: float | None, waehrung: str | None) -> float | None:
-    """
-    Rechnet einen Betrag in die Zielwährung EUR um.
-    Gibt None zurück wenn Währung unbekannt oder Wert fehlt.
-    """
+    """Konvertiert einen Betrag zur Zielwährung EUR. None bei unbekannter Währung."""
     if wert is None or wert <= 0:
         return None
     kuerzel = (waehrung or "EUR").strip().upper()
     faktor = FX_ZU_EUR.get(kuerzel)
     if faktor is None:
-        logger.debug("Unbekannte Währung '%s' – Datensatz wird verworfen.", kuerzel)
+        logger.debug("Unbekannte Währung '%s' ignoriert.", kuerzel)
         return None
     return round(wert * faktor, 2)
 
 
 def _berechne_dauer(datum_ende: str | None, datum_pub: str | None) -> int | None:
     """
-    Berechnet die Laufzeit in Tagen aus End- und Veröffentlichungsdatum.
-    Eingabeformat: YYYYMMDD als String (TED-Standard).
+    Berechnet Laufzeit in Tagen (Ende − Publikation).
+    Eingabeformat: YYYYMMDD (TED-Standard). Gibt None bei ungültigen Werten zurück.
     """
     if not datum_ende or not datum_pub:
         return None
     try:
-        ende = pd.to_datetime(datum_ende, format="%Y%m%d", errors="coerce")
-        start = pd.to_datetime(datum_pub, format="%Y%m%d", errors="coerce")
+        ende = pd.to_datetime(str(datum_ende), format="%Y%m%d", errors="coerce")
+        start = pd.to_datetime(str(datum_pub), format="%Y%m%d", errors="coerce")
         if pd.isna(ende) or pd.isna(start):
             return None
-        delta = (ende - start).days
-        return int(delta) if DAUER_MIN_TAGE <= delta <= DAUER_MAX_TAGE else None
+        delta = int((ende - start).days)
+        return delta if DAUER_MIN_TAGE <= delta <= DAUER_MAX_TAGE else None
     except Exception:
         return None
 
 
 # ---------------------------------------------------------------------------
-# Kernfunktionen
+# Schritt 3 – Datensätze zu DataFrame konvertieren
 # ---------------------------------------------------------------------------
 
-def lade_jsonl(pfad: str | Path) -> list[dict]:
-    """Lädt eine JSON-Lines-Datei zeilenweise in eine Liste."""
-    datensaetze: list[dict] = []
-    with open(pfad, encoding="utf-8") as f:
-        for zeile in f:
-            zeile = zeile.strip()
-            if zeile:
-                datensaetze.append(json.loads(zeile))
-    logger.info("Geladen: %d Rohdatensätze aus %s", len(datensaetze), pfad)
-    return datensaetze
-
-
-def erstelle_dataframe(datensaetze: list[dict]) -> pd.DataFrame:
+def _konvertiere_zu_dataframe(datensaetze: list[dict]) -> pd.DataFrame:
     """
-    Bereinigt rohe TED-Notice-Dicts und gibt einen strukturierten DataFrame zurück.
-
-    Ausgabe-Spalten:
-        titel          (str)   – bereinigter Ausschreibungstitel
-        beschreibung   (str)   – bereinigter Volltext
-        budget_eur     (float) – Auftragswert in EUR, NaN wenn nicht verfügbar
-        dauer_tage     (int)   – Laufzeit in Tagen, NaN wenn nicht berechenbar
-        land           (str)   – ISO-Ländercode (DE, AT, CH, ...)
-        cpv_code       (int)   – 8-stelliger CPV-Code
-
-    Qualitätsstufen (werden protokolliert):
-        1. CPV außerhalb IT-Bereich → verworfen
-        2. Duplikate (gleiche document_id) → dedupliziert
-        3. Titel oder Beschreibung zu kurz → verworfen
-        4. Budgets außerhalb [5k, 500M] EUR → auf NaN gesetzt (Zeile bleibt)
-        5. Laufzeit außerhalb [7, 3650] Tage → auf NaN gesetzt (Zeile bleibt)
+    Wandelt rohe TedNotice-Dicts in Zeilen um.
+    Verwirft Datensätze mit fehlendem CPV, doppelter ID oder zu kurzem Text.
+    Loggt jeden Verwerfungsgrund separat.
     """
-    roh_anzahl = len(datensaetze)
     zeilen: list[dict] = []
     gesehen_ids: set[str] = set()
 
-    kein_cpv = 0
-    kein_it_cpv = 0
-    duplikat = 0
-    zu_kurzer_text = 0
+    zaehler = {
+        "kein_cpv": 0,
+        "duplikat": 0,
+        "text_zu_kurz": 0,
+        "akzeptiert": 0,
+    }
 
     for rec in datensaetze:
-        # --- CPV validieren ---
+        # CPV parsen – Zeilen ohne IT-CPV verwerfen
         cpv_code = _parse_cpv(rec.get("cpv_code"))
         if cpv_code is None:
-            kein_cpv += 1
-            continue
-        if not (72_000_000 <= cpv_code <= 72_900_000):
-            kein_it_cpv += 1
+            zaehler["kein_cpv"] += 1
             continue
 
-        # --- Duplikate entfernen ---
-        doc_id = rec.get("document_id", "")
+        # Duplikate über document_id erkennen
+        doc_id = str(rec.get("document_id") or "")
         if doc_id and doc_id in gesehen_ids:
-            duplikat += 1
+            zaehler["duplikat"] += 1
             continue
         if doc_id:
             gesehen_ids.add(doc_id)
 
-        # --- Texte bereinigen ---
+        # Texte bereinigen und Mindestlänge prüfen
         titel = _bereinige_text(rec.get("title"))
         beschreibung = _bereinige_text(rec.get("description"))
-
         if len(titel) < TITEL_MIN_ZEICHEN or len(beschreibung) < BESCHREIBUNG_MIN_ZEICHEN:
-            zu_kurzer_text += 1
+            zaehler["text_zu_kurz"] += 1
             continue
 
-        # --- Budget umrechnen (NaN wenn nicht verfügbar, Zeile bleibt) ---
-        budget_eur = _budget_zu_eur(rec.get("estimated_value"), rec.get("currency"))
-        if budget_eur is not None and not (BUDGET_MIN_EUR <= budget_eur <= BUDGET_MAX_EUR):
-            budget_eur = None  # Extremwert → NaN, Datensatz behalten
-
-        # --- Laufzeit berechnen (NaN wenn nicht berechenbar) ---
-        dauer_tage = _berechne_dauer(
-            rec.get("duration_end"),
-            rec.get("publication_date"),
-        )
-
         zeilen.append({
-            "titel": titel,
+            "titel":        titel,
             "beschreibung": beschreibung,
-            "budget_eur": budget_eur,
-            "dauer_tage": dauer_tage,
-            "land": (rec.get("country") or "").upper().strip(),
-            "cpv_code": cpv_code,
+            "budget_eur":   _budget_zu_eur(rec.get("estimated_value"), rec.get("currency")),
+            "dauer_tage":   _berechne_dauer(rec.get("duration_end"), rec.get("publication_date")),
+            "land":         (rec.get("country") or "").upper().strip() or None,
+            "cpv_code":     cpv_code,
+            "projekttyp":   _cpv_zu_projekttyp(cpv_code),
         })
-
-    # --- DataFrame aufbauen ---
-    df = pd.DataFrame(zeilen)
-
-    if df.empty:
-        logger.warning("Kein gültiger Datensatz nach Bereinigung übrig.")
-        return df
-
-    # --- Datentypen finalisieren ---
-    df["budget_eur"] = pd.to_numeric(df["budget_eur"], errors="coerce")
-    df["dauer_tage"] = pd.to_numeric(df["dauer_tage"], errors="coerce").astype("Int64")
-    df["cpv_code"] = df["cpv_code"].astype("int32")
-    df["land"] = df["land"].astype("category")
-
-    # --- Qualitätsbericht ---
-    n_mit_budget = df["budget_eur"].notna().sum()
-    n_mit_dauer = df["dauer_tage"].notna().sum()
+        zaehler["akzeptiert"] += 1
 
     logger.info(
-        "Bereinigung abgeschlossen:\n"
-        "  Eingabe:            %d\n"
-        "  Kein CPV:           %d verworfen\n"
-        "  Kein IT-CPV:        %d verworfen\n"
-        "  Duplikate:          %d entfernt\n"
-        "  Text zu kurz:       %d verworfen\n"
-        "  ─────────────────────────────────\n"
-        "  Ausgabe:            %d Zeilen\n"
-        "  Mit Budget (EUR):   %d (%.0f%%)\n"
-        "  Mit Laufzeit:       %d (%.0f%%)",
-        roh_anzahl,
-        kein_cpv, kein_it_cpv, duplikat, zu_kurzer_text,
-        len(df),
-        n_mit_budget, 100 * n_mit_budget / len(df),
-        n_mit_dauer, 100 * n_mit_dauer / len(df),
+        "[Konvertierung] Ergebnis:\n"
+        "  %-22s %d\n"
+        "  %-22s %d verworfen\n"
+        "  %-22s %d entfernt\n"
+        "  %-22s %d verworfen\n"
+        "  %-22s %d",
+        "Eingabe:", len(datensaetze),
+        "Kein IT-CPV:", zaehler["kein_cpv"],
+        "Duplikate:", zaehler["duplikat"],
+        "Text zu kurz:", zaehler["text_zu_kurz"],
+        "Akzeptiert:", zaehler["akzeptiert"],
     )
 
+    return pd.DataFrame(zeilen)
+
+
+# ---------------------------------------------------------------------------
+# Schritt 4 – Ausreißer bereinigen
+# ---------------------------------------------------------------------------
+
+def _bereinige_budget(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Setzt Budget-Ausreißer auf NaN (Datensatz bleibt erhalten).
+    Loggt Anzahl betroffener Zeilen.
+    """
+    vorher_nan = df["budget_eur"].isna().sum()
+    maske_ausreisser = df["budget_eur"].notna() & (
+        (df["budget_eur"] < BUDGET_MIN_EUR) | (df["budget_eur"] > BUDGET_MAX_EUR)
+    )
+    df.loc[maske_ausreisser, "budget_eur"] = pd.NA
+
+    neue_nan = df["budget_eur"].isna().sum() - vorher_nan
+    logger.info(
+        "[Budget] %d Ausreißer auf NaN gesetzt (< %s € oder > %s €).",
+        neue_nan,
+        f"{BUDGET_MIN_EUR:,}",
+        f"{BUDGET_MAX_EUR:,}",
+    )
     return df
 
 
-def preprocess_pipeline(
-    eingabe_pfad: str = "data/raw_notices.jsonl",
-    ausgabe_pfad: str = "data/processed_notices.parquet",
-) -> pd.DataFrame:
+def _bereinige_dauer(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Vollständige Pipeline: Laden → Bereinigen → Speichern als Parquet.
-    Gibt den fertigen DataFrame zurück.
+    Setzt Laufzeit-Ausreißer auf NaN (Datensatz bleibt erhalten).
+    Loggt Anzahl betroffener Zeilen.
     """
-    datensaetze = lade_jsonl(eingabe_pfad)
-    df = erstelle_dataframe(datensaetze)
+    vorher_nan = df["dauer_tage"].isna().sum()
+    maske_ausreisser = df["dauer_tage"].notna() & (
+        (df["dauer_tage"] < DAUER_MIN_TAGE) | (df["dauer_tage"] > DAUER_MAX_TAGE)
+    )
+    df.loc[maske_ausreisser, "dauer_tage"] = pd.NA
 
-    if not df.empty:
-        Path(ausgabe_pfad).parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(ausgabe_pfad, index=False)
-        groesse_kb = Path(ausgabe_pfad).stat().st_size // 1024
-        logger.info("Gespeichert: %s (%d KB)", ausgabe_pfad, groesse_kb)
-
+    neue_nan = df["dauer_tage"].isna().sum() - vorher_nan
+    logger.info(
+        "[Dauer] %d Ausreißer auf NaN gesetzt (< %d Tage oder > %d Tage).",
+        neue_nan, DAUER_MIN_TAGE, DAUER_MAX_TAGE,
+    )
     return df
 
 
 # ---------------------------------------------------------------------------
-# Direkt ausführbar
+# Schritt 5 – Datentypen finalisieren
+# ---------------------------------------------------------------------------
+
+def _finalisiere_typen(df: pd.DataFrame) -> pd.DataFrame:
+    """Setzt finale pandas-Datentypen für Speichereffizienz."""
+    df["budget_eur"] = pd.to_numeric(df["budget_eur"], errors="coerce").astype("float64")
+    df["dauer_tage"] = pd.to_numeric(df["dauer_tage"], errors="coerce").astype("Int64")
+    df["cpv_code"]   = df["cpv_code"].astype("string")
+    df["land"]       = df["land"].astype("category")
+    df["projekttyp"] = df["projekttyp"].astype("category")
+    logger.info("[Typen] Datentypen finalisiert.")
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Schritt 6 – Speichern
+# ---------------------------------------------------------------------------
+
+def speichere_ergebnisse(df: pd.DataFrame, verzeichnis: str | Path = "data/processed") -> dict[str, Path]:
+    """
+    Speichert den DataFrame als Parquet und CSV.
+    Gibt ein Dict mit den tatsächlichen Pfaden zurück.
+    """
+    verzeichnis = Path(verzeichnis)
+    verzeichnis.mkdir(parents=True, exist_ok=True)
+
+    pfad_parquet = verzeichnis / "notices.parquet"
+    pfad_csv     = verzeichnis / "notices.csv"
+
+    df.to_parquet(pfad_parquet, index=False)
+    df.to_csv(pfad_csv, index=False, encoding="utf-8")
+
+    logger.info(
+        "[Speichern] Parquet: %s (%.0f KB) | CSV: %s (%.0f KB)",
+        pfad_parquet, pfad_parquet.stat().st_size / 1024,
+        pfad_csv,     pfad_csv.stat().st_size / 1024,
+    )
+    return {"parquet": pfad_parquet, "csv": pfad_csv}
+
+
+# ---------------------------------------------------------------------------
+# Schritt 7 – Statistik
+# ---------------------------------------------------------------------------
+
+def zeige_statistik(df: pd.DataFrame) -> None:
+    """Gibt eine kompakte Übersicht über den bereinigten Datensatz aus."""
+    n_gesamt       = len(df)
+    n_mit_budget   = df["budget_eur"].notna().sum()
+    n_mit_dauer    = df["dauer_tage"].notna().sum()
+    n_ohne_budget  = n_gesamt - n_mit_budget
+
+    budget = df["budget_eur"].dropna()
+    dauer  = df["dauer_tage"].dropna()
+
+    trenner = "─" * 50
+
+    print(f"\n{trenner}")
+    print("  EstimateIQ – Datensatz-Statistik")
+    print(trenner)
+
+    print(f"\n  Anzahl Projekte gesamt:   {n_gesamt:>8,}")
+    print(f"  Davon mit Budget (EUR):   {n_mit_budget:>8,}  ({100*n_mit_budget/n_gesamt:.0f}%)")
+    print(f"  Davon ohne Budget:        {n_ohne_budget:>8,}  ({100*n_ohne_budget/n_gesamt:.0f}%)")
+    print(f"  Davon mit Laufzeit:       {n_mit_dauer:>8,}  ({100*n_mit_dauer/n_gesamt:.0f}%)")
+
+    if not budget.empty:
+        print(f"\n  Budget-Verteilung (EUR):")
+        print(f"    Minimum:   {budget.min():>15,.0f} €")
+        print(f"    Median:    {budget.median():>15,.0f} €")
+        print(f"    Ø Mittel:  {budget.mean():>15,.0f} €")
+        print(f"    90. Pztl:  {budget.quantile(0.90):>15,.0f} €")
+        print(f"    Maximum:   {budget.max():>15,.0f} €")
+
+    if not dauer.empty:
+        print(f"\n  Laufzeit-Verteilung (Tage):")
+        print(f"    Minimum:   {int(dauer.min()):>8,}")
+        print(f"    Median:    {int(dauer.median()):>8,}")
+        print(f"    Maximum:   {int(dauer.max()):>8,}")
+
+    print(f"\n  Häufigste Projekttypen:")
+    for typ, anzahl in df["projekttyp"].value_counts().head(8).items():
+        balken = "█" * int(40 * anzahl / n_gesamt)
+        print(f"    {typ:<35} {anzahl:>5,}  {balken}")
+
+    print(f"\n  Top-Länder:")
+    for land, anzahl in df["land"].value_counts().head(6).items():
+        print(f"    {land:<6} {anzahl:>6,}")
+
+    print(f"\n{trenner}\n")
+
+
+# ---------------------------------------------------------------------------
+# Haupt-Pipeline
+# ---------------------------------------------------------------------------
+
+def preprocess_pipeline(
+    eingabe_pfad: str | Path = "data/raw_notices.jsonl",
+    ausgabe_verzeichnis: str | Path = "data/processed",
+) -> pd.DataFrame:
+    """
+    Vollständige Pipeline:
+      Laden → Konvertieren → Ausreißer bereinigen → Typen setzen → Speichern → Statistik
+
+    Args:
+        eingabe_pfad:        Pfad zur raw_notices.jsonl von fetch_ted.py
+        ausgabe_verzeichnis: Zielordner für notices.parquet und notices.csv
+
+    Returns:
+        Fertiger, bereinigter DataFrame mit 7 Spalten.
+    """
+    logger.info("=== EstimateIQ Preprocessing gestartet ===")
+
+    # 1. Laden
+    datensaetze = lade_rohdaten(eingabe_pfad)
+
+    # 2. Konvertieren & Pflichtfelder prüfen
+    df = _konvertiere_zu_dataframe(datensaetze)
+    if df.empty:
+        logger.warning("Kein gültiger Datensatz nach Konvertierung – Abbruch.")
+        return df
+
+    # 3. Ausreißer behandeln
+    df = _bereinige_budget(df)
+    df = _bereinige_dauer(df)
+
+    # 4. Datentypen finalisieren
+    df = _finalisiere_typen(df)
+
+    # 5. Speichern
+    speichere_ergebnisse(df, ausgabe_verzeichnis)
+
+    logger.info("=== Preprocessing abgeschlossen: %d Zeilen, 7 Spalten ===", len(df))
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Direkt ausführbar: python -m estimateiq.data.preprocess
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(levelname)-8s  %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     df = preprocess_pipeline()
 
     if not df.empty:
-        print("\n── Spaltenübersicht ──────────────────────")
-        print(df.dtypes.to_string())
-        print("\n── Numerische Statistiken ────────────────")
-        print(df[["budget_eur", "dauer_tage"]].describe().to_string())
-        print("\n── Fehlende Werte ────────────────────────")
-        print(df.isna().sum().to_string())
-        print("\n── Top-Länder ────────────────────────────")
-        print(df["land"].value_counts().head(10).to_string())
+        zeige_statistik(df)
