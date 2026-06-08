@@ -120,18 +120,14 @@ def _cpv_to_category(cpv_code: int | None) -> str:
 
 
 def _request_to_dataframe(req: EstimateRequest) -> pd.DataFrame:
-    """Wandelt eine EstimateRequest in einen einzeiligen DataFrame um."""
+    """Wandelt eine EstimateRequest in einen einzeiligen DataFrame um (passend zu preprocess.py)."""
     return pd.DataFrame([{
+        "titel": req.title,
+        "beschreibung": req.description,
+        "budget_eur": None,
+        "dauer_tage": req.duration_days,
+        "land": req.country or "DE",
         "cpv_code": req.cpv_code or 72000000,
-        "cpv_category": _cpv_to_category(req.cpv_code),
-        "country": req.country or "DE",
-        "duration_days": req.duration_days,
-        "contract_type": req.contract_type,
-        "procedure_type": req.procedure_type,
-        "authority_type": req.authority_type,
-        "estimated_value_eur": None,
-        "has_value": False,
-        "text_combined": f"{req.title} {req.description}",
     }])
 
 
@@ -162,7 +158,7 @@ async def estimate(req: EstimateRequest):
     """
     try:
         df = _request_to_dataframe(req)
-        text = f"{req.title} {req.description}"
+        text = f"{req.title} {req.description}".strip()
 
         # BERT-Embeddings berechnen
         embeddings = extract_embeddings([text])

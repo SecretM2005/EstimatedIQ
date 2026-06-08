@@ -19,10 +19,10 @@ MODEL_PATH = "models/cost_model.joblib"
 ENCODERS_PATH = "models/cost_label_encoders.joblib"
 
 # Kategoriale Spalten, die Label-enkodiert werden
-CATEGORICAL_COLS = ["cpv_category", "country", "contract_type", "procedure_type", "authority_type"]
+CATEGORICAL_COLS = ["land"]
 
 # Numerische Spalten ohne Embeddings
-NUMERIC_COLS = ["duration_days", "cpv_code"]
+NUMERIC_COLS = ["dauer_tage", "cpv_code"]
 
 
 def _prepare_features(df: pd.DataFrame, embeddings: np.ndarray, encoders: dict | None = None):
@@ -72,16 +72,16 @@ def train(df: pd.DataFrame, embeddings: np.ndarray) -> dict:
     Erwartet, dass df['estimated_value_eur'] die Zielvariable enthält.
     Gibt Evaluationsmetriken zurück.
     """
-    # Nur Zeilen mit bekanntem Auftragswert nutzen
-    mask = df["has_value"] & df["estimated_value_eur"].notna()
+    # Nur Zeilen mit bekanntem Budget nutzen
+    mask = df["budget_eur"].notna()
     df_train = df[mask].reset_index(drop=True)
-    emb_train = embeddings[mask]
+    emb_train = embeddings[mask.values]
 
     if len(df_train) < 50:
         raise ValueError(f"Zu wenig Trainingsdaten: {len(df_train)} Zeilen (min. 50 benötigt)")
 
     # Log-Transformation für rechtsschiefe Werteverteilung
-    y = np.log1p(df_train["estimated_value_eur"].values)
+    y = np.log1p(df_train["budget_eur"].values)
 
     X, encoders = _prepare_features(df_train, emb_train)
 

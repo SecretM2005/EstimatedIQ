@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 MODEL_PATH = "models/risk_model.joblib"
 ENCODERS_PATH = "models/risk_label_encoders.joblib"
 
-CATEGORICAL_COLS = ["cpv_category", "country", "contract_type", "procedure_type"]
-NUMERIC_COLS = ["duration_days", "cpv_code", "estimated_value_eur"]
+CATEGORICAL_COLS = ["land"]
+NUMERIC_COLS = ["dauer_tage", "cpv_code", "budget_eur"]
 
 RISK_LABELS = {0: "niedrig", 1: "mittel", 2: "hoch"}
 
@@ -32,22 +32,16 @@ def _assign_risk_label(df: pd.DataFrame) -> np.ndarray:
     """
     risk = np.zeros(len(df), dtype=int)
 
-    # Hohe Werte oder sehr kurze Laufzeiten → erhöhtes Risiko
-    if "estimated_value_eur" in df.columns:
-        high_value = df["estimated_value_eur"].fillna(0) > 1_000_000
-        risk = np.where(high_value, np.maximum(risk, 1), risk)
+    # Budget-Schwellen: > 1 Mio. → mittel, > 10 Mio. → hoch
+    if "budget_eur" in df.columns:
+        budget = pd.to_numeric(df["budget_eur"], errors="coerce").fillna(0)
+        risk = np.where(budget > 1_000_000, np.maximum(risk, 1), risk)
+        risk = np.where(budget > 10_000_000, 2, risk)
 
-        very_high = df["estimated_value_eur"].fillna(0) > 10_000_000
-        risk = np.where(very_high, 2, risk)
-
-    if "duration_days" in df.columns:
-        short_contract = (df["duration_days"].fillna(999) < 60)
-        risk = np.where(short_contract, np.maximum(risk, 1), risk)
-
-    # Verhandlungsverfahren → erhöhtes Risiko
-    if "procedure_type" in df.columns:
-        negotiated = df["procedure_type"].astype(str).str.contains("2|3", na=False)
-        risk = np.where(negotiated, np.maximum(risk, 1), risk)
+    # Sehr kurze Laufzeit (< 60 Tage) → erhöhtes Risiko
+    if "dauer_tage" in df.columns:
+        dauer = pd.to_numeric(df["dauer_tage"], errors="coerce").fillna(999)
+        risk = np.where(dauer < 60, np.maximum(risk, 1), risk)
 
     return risk
 
