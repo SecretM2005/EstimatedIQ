@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
+from estimateiq.models.bert_extractor import extrahiere_features
 from estimateiq.models.cost_model import predict as predict_cost
 from estimateiq.models.risk_model import predict as predict_risk
 
@@ -57,6 +58,10 @@ class EstimateResponse(BaseModel):
     cost_range_high_eur: float = Field(description="Obere Schranke (+35 %)")
     risk: RiskDetail
     cpv_category: str
+    projekttyp_bert: str = Field(description="Aus Beschreibung erkannter Projekttyp")
+    technologien: list[str] = Field(default_factory=list, description="Erkannte Technologien")
+    komplexitaet: int = Field(description="Komplexitäts-Score 1–5")
+    schnittstellen_anzahl: int = Field(description="Geschätzte Anzahl Schnittstellen")
     model_version: str = "1.0.0"
 
 
@@ -160,7 +165,10 @@ async def estimate(req: EstimateRequest):
     try:
         df = _request_to_dataframe(req)
 
-        # Kostenschätzung (v1: rein numerisch, kein BERT)
+        # BERT-Features aus Beschreibung extrahieren
+        bert = extrahiere_features(req.description)
+
+        # Kostenschätzung (v1: rein numerisch)
         cost_predictions = predict_cost(df)
         estimated_cost = float(cost_predictions[0])
 
@@ -169,8 +177,6 @@ async def estimate(req: EstimateRequest):
         risk_class = int(risk_result["risk_class"][0])
         risk_label = risk_result["risk_label"][0]
         probas = risk_result["probabilities"][0]
-
-        # Auffüllen auf 3 Klassen, falls Modell weniger kennt
         while len(probas) < 3:
             probas.append(0.0)
 
@@ -186,6 +192,10 @@ async def estimate(req: EstimateRequest):
                 probability_high=round(probas[2], 4),
             ),
             cpv_category=_cpv_to_category(req.cpv_code),
+            projekttyp_bert=bert["projekttyp_bert"],
+            technologien=bert["technologien"],
+            komplexitaet=bert["komplexitaet"],
+            schnittstellen_anzahl=bert["schnittstellen_anzahl"],
         )
 
     except FileNotFoundError as exc:
