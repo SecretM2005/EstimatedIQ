@@ -53,6 +53,8 @@ class RiskDetail(BaseModel):
 
 class EstimateResponse(BaseModel):
     """Antwort mit Kostenschätzung und Risikoanalyse."""
+    model_config = {"protected_namespaces": ()}
+
     estimated_cost_eur: float = Field(description="Geschätzter Auftragswert in EUR")
     cost_range_low_eur: float = Field(description="Untere Schranke (–20 %)")
     cost_range_high_eur: float = Field(description="Obere Schranke (+35 %)")

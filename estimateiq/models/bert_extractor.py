@@ -61,9 +61,9 @@ PROJEKTTYP_ANKER: dict[str, list[str]] = {
         "Anbindung von Drittsystemen über REST SOAP und Nachrichtenbroker",
     ],
     "Migration": [
-        "Datenmigration und Ablösung von Altsystemen auf neue Plattform",
-        "Legacy-System-Ablösung Cloud-Migration und Überführung bestehender Daten",
-        "Systemwechsel Datenbankmigrierung Modernisierung veralteter IT-Infrastruktur",
+        "Datenmigration und Ablösung von Altsystemen auf eine neue Plattform",
+        "Legacy-System-Ablösung und Überführung bestehender Daten in neue Systeme",
+        "Systemwechsel Datenbankmigrierung Modernisierung veralteter Softwareumgebungen",
     ],
     "Beratung": [
         "IT-Beratung Strategieentwicklung Konzeption und Machbarkeitsanalyse",
@@ -71,9 +71,9 @@ PROJEKTTYP_ANKER: dict[str, list[str]] = {
         "Beratungsleistungen Anforderungsanalyse und technische Konzepterstellung",
     ],
     "Infrastruktur": [
-        "IT-Infrastruktur Server Netzwerk Rechenzentrum und Cloud-Betrieb",
-        "Aufbau Betrieb und Wartung von Serversystemen Netzwerken und Rechenzentren",
-        "Cloud Infrastructure Hardware Storage Monitoring und IT-Betrieb",
+        "Aufbau und Betrieb von Cloud-Infrastruktur mit Kubernetes Docker und Terraform",
+        "Server Netzwerk Rechenzentrum Hosting Monitoring Betrieb und DevOps",
+        "IT-Infrastruktur Automatisierung CI/CD Container-Plattform und Cloud-Betrieb",
     ],
     "Sonstiges": [
         "Softwarewartung Pflege und Support bestehender Anwendungen",
