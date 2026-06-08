@@ -1,7 +1,7 @@
 """
 TED Europa API Connector
 Ruft öffentliche EU-Ausschreibungen ab und filtert auf IT-relevante CPV-Codes (72000000–72900000).
-Dokumentation: https://ted.europa.eu/api/v3.0
+Dokumentation: https://docs.ted.europa.eu/api/latest/index.html
 """
 
 import time
@@ -13,8 +13,8 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-# TED API Basiskonfiguration
-TED_API_BASE = "https://ted.europa.eu/api/v3.0"
+# TED API Basiskonfiguration (neue Domain seit 2024)
+TED_API_BASE = "https://api.ted.europa.eu/v3"
 TED_SEARCH_ENDPOINT = f"{TED_API_BASE}/notices/search"
 
 # IT-relevante CPV-Codes (Informationstechnologie & Dienstleistungen)
@@ -83,10 +83,7 @@ class TedApiClient:
         self.client = httpx.Client(timeout=timeout)
 
     def _build_cpv_filter(self) -> str:
-        """Erstellt einen CQL-Filter für den IT-CPV-Bereich."""
-        # TED-API nutzt CQL (Common Query Language)
-        codes = [str(c) for c in range(IT_CPV_RANGE_START, IT_CPV_RANGE_END + 1, 100000)]
-        cpv_conditions = " OR ".join(f'PC=[{IT_CPV_RANGE_START},{IT_CPV_RANGE_END}]')
+        """Erstellt einen CQL-Bereichsfilter für den IT-CPV-Bereich (72000000–72900000)."""
         return f"PC=[{IT_CPV_RANGE_START},{IT_CPV_RANGE_END}]"
 
     def _build_query(self, countries: list[str] | None = None, year: int | None = None) -> str:
@@ -143,13 +140,15 @@ class TedApiClient:
 
     def _request_page(self, query: str, page: int) -> dict:
         """Führt eine einzelne paginierte Anfrage durch, mit Retry-Logik."""
+        # Parameterformat gemäß TED API v3 (api.ted.europa.eu):
+        #   page/limit statt pageNum/pageSize, paginationMode erforderlich
         payload = {
             "query": query,
             "fields": FIELDS,
-            "pageNum": page,
-            "pageSize": self.page_size,
-            "sortField": "PD",
-            "sortOrder": "DESC",
+            "page": page,
+            "limit": self.page_size,
+            "paginationMode": "PAGE_NUMBER",
+            "checkQuerySyntax": False,
         }
 
         for attempt in range(self.max_retries):
@@ -206,8 +205,12 @@ class TedApiClient:
             logger.info("Lade Seite %d...", page)
             data = self._request_page(query, page)
 
+            # Beim ersten Aufruf Antwortstruktur loggen (hilft bei API-Änderungen)
+            if page == 1:
+                logger.debug("API-Antwort Schlüssel: %s", list(data.keys()))
+
             notices = data.get("notices", [])
-            total = data.get("total", 0)
+            total = data.get("total", data.get("totalNoticeCount", 0))
 
             if not notices:
                 logger.info("Keine weiteren Ausschreibungen. Gesamt: %d", total_fetched)
