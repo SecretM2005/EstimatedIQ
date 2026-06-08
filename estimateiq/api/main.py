@@ -14,8 +14,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
 from estimateiq.models.bert_extractor import extrahiere_features
-from estimateiq.models.cost_model import predict as predict_cost
 from estimateiq.models.risk_model import predict as predict_risk
+
+# Kostenschätzung: v2 (BERT-Features) wenn trainiert, sonst v1
+from estimateiq.models.cost_model_v2 import MODELL_PKL as _V2_PKL
+if _V2_PKL.exists():
+    from estimateiq.models.cost_model_v2 import predict as predict_cost
+    _COST_MODEL_PKL = _V2_PKL
+    _COST_MODEL_VERSION = "2.0"
+else:
+    from estimateiq.models.cost_model import predict as predict_cost
+    from estimateiq.models.cost_model import MODELL_PKL as _COST_MODEL_PKL
+    _COST_MODEL_VERSION = "1.0"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -64,7 +74,7 @@ class EstimateResponse(BaseModel):
     technologien: list[str] = Field(default_factory=list, description="Erkannte Technologien")
     komplexitaet: int = Field(description="Komplexitäts-Score 1–5")
     schnittstellen_anzahl: int = Field(description="Geschätzte Anzahl Schnittstellen")
-    model_version: str = "1.0.0"
+    model_version: str = Field(default="1.0.0", description="Aktive Modellversion (1.0 = numerisch, 2.0 = BERT)")
 
 
 class HealthResponse(BaseModel):
@@ -79,13 +89,17 @@ class HealthResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Modelle beim Start vorladen, um beim ersten Request keine Verzögerung zu haben."""
-    logger.info("Lade Modelle beim Start...")
+    logger.info("Lade Modelle beim Start (Cost Model v%s)...", _COST_MODEL_VERSION)
     try:
-        from estimateiq.models.cost_model import _lade_modell
-        _lade_modell()
+        predict_cost(__import__("pandas").DataFrame([{
+            "titel": "test", "beschreibung": "test", "budget_eur": None,
+            "dauer_tage": 30, "land": "DE", "cpv_code": "72000000", "projekttyp": "sonstiges_it",
+        }]))
         logger.info("Modelle erfolgreich geladen.")
-    except Exception as exc:
+    except FileNotFoundError as exc:
         logger.warning("Modelle nicht vorhanden, werden bei Bedarf geladen: %s", exc)
+    except Exception as exc:
+        logger.warning("Modell-Vorlade fehlgeschlagen (wird beim ersten Request geladen): %s", exc)
     yield
 
 
@@ -146,9 +160,8 @@ def _request_to_dataframe(req: EstimateRequest) -> pd.DataFrame:
 async def health_check():
     """Liefert den Betriebsstatus der API."""
     try:
-        from estimateiq.models.cost_model import _lade_modell
-        _lade_modell()
-        models_ok = True
+        from pathlib import Path
+        models_ok = _COST_MODEL_PKL.exists()
     except Exception:
         models_ok = False
     return HealthResponse(status="ok", models_loaded=models_ok)
@@ -170,7 +183,13 @@ async def estimate(req: EstimateRequest):
         # BERT-Features aus Beschreibung extrahieren
         bert = extrahiere_features(req.description)
 
-        # Kostenschätzung (v1: rein numerisch)
+        # DataFrame für v2 um BERT-Features anreichern (v1 ignoriert diese Spalten)
+        df["projekttyp_bert"]       = bert["projekttyp_bert"]
+        df["komplexitaet"]          = bert["komplexitaet"]
+        df["schnittstellen_anzahl"] = bert["schnittstellen_anzahl"]
+        df["technologien"]          = [bert["technologien"]]
+
+        # Kostenschätzung
         cost_predictions = predict_cost(df)
         estimated_cost = float(cost_predictions[0])
 
@@ -198,6 +217,7 @@ async def estimate(req: EstimateRequest):
             technologien=bert["technologien"],
             komplexitaet=bert["komplexitaet"],
             schnittstellen_anzahl=bert["schnittstellen_anzahl"],
+            model_version=_COST_MODEL_VERSION,
         )
 
     except FileNotFoundError as exc:
