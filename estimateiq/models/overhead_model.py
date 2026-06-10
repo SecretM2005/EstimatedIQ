@@ -161,30 +161,65 @@ def _erstelle_feature_matrix(
 
 def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
     """
-    Trainiert das Tagespreis-Modell.
+    Trainiert das Tagespreis-Modell auf ALLEN Budget-Projekten.
 
     Zielgröße: log(budget_eur / dauer_tage) = log(tagespreis in EUR/Tag)
-    Vorteil:   Keine Teamgrößen-Schätzung nötig → eliminiert größte Fehlerquelle
-               des alten Overhead-Ansatzes.
+
+    Für Projekte OHNE tatsächliche dauer_tage wird das trainierte Duration-Modell
+    verwendet, um Laufzeiten vorherzusagen. Dadurch steigt das Training von ~710
+    (nur Budget+Laufzeit) auf ~2.241 (alle Budget-Projekte) – 3× mehr Daten und
+    vor allem die korrekte Verteilung inkl. großer Rahmenverträge.
     """
     logger.info("[Tagespreis] Starte Training (Ziel: log(budget/dauer_tage))...")
 
     df = _feature_engineering(df)
-    maske = (
-        df["budget_eur"].notna()
-        & df["dauer_tage"].notna()
-        & (pd.to_numeric(df["dauer_tage"], errors="coerce") >= 7)
-    )
-    df_sauber = df[maske].reset_index(drop=True)
-    logger.info("[Tagespreis] %d / %d Projekte mit Budget + Laufzeit.", len(df_sauber), len(df))
+
+    # Alle Budget-Projekte als Basis (nicht nur jene mit tatsächlicher Laufzeit)
+    maske_budget = df["budget_eur"].notna()
+    df_sauber = df[maske_budget].reset_index(drop=True)
+    logger.info("[Tagespreis] %d Budget-Projekte gesamt (aus %d).", len(df_sauber), len(df))
 
     if len(df_sauber) < 30:
         raise ValueError(f"Zu wenig Trainingsdaten: {len(df_sauber)} (Minimum: 30).")
 
-    dauer = pd.to_numeric(df_sauber["dauer_tage"], errors="coerce").clip(lower=1.0)
-    tagespreis = (df_sauber["budget_eur"].astype(float) / dauer).clip(
+    # Laufzeit: tatsächlich wo vorhanden, sonst Duration-Modell-Vorhersage
+    hat_echte_dauer = (
+        df_sauber["dauer_tage"].notna()
+        & (pd.to_numeric(df_sauber["dauer_tage"], errors="coerce") >= 7)
+    )
+    n_actual = int(hat_echte_dauer.sum())
+    n_pred   = int((~hat_echte_dauer).sum())
+
+    dauer_arr = pd.to_numeric(df_sauber["dauer_tage"], errors="coerce").values.astype(np.float64)
+
+    if n_pred > 0:
+        try:
+            from estimateiq.models.duration_model import predict as _dur_predict
+            df_ohne = df_sauber[~hat_echte_dauer].reset_index(drop=True)
+            dauer_pred = _dur_predict(df_ohne).astype(np.float64)
+            dauer_arr[~hat_echte_dauer.values] = dauer_pred
+            # log_dauer-Feature mit vollständiger Laufzeit aktualisieren
+            df_sauber = df_sauber.copy()
+            df_sauber["dauer_tage"] = dauer_arr
+            df_sauber["log_dauer"]  = np.log1p(np.clip(dauer_arr, 1.0, None)).astype("float32")
+            logger.info(
+                "[Tagespreis] Laufzeiten: %d tatsächlich + %d vorhergesagt = %d Trainingsprojekte.",
+                n_actual, n_pred, len(df_sauber),
+            )
+        except FileNotFoundError:
+            logger.warning(
+                "[Tagespreis] Duration-Modell fehlt – Fallback auf %d Projekte mit tatsächl. Laufzeit. "
+                "Zuerst: python train.py --only duration",
+                n_actual,
+            )
+            df_sauber = df_sauber[hat_echte_dauer].reset_index(drop=True)
+            dauer_arr = pd.to_numeric(df_sauber["dauer_tage"], errors="coerce").values.astype(np.float64)
+
+    dauer = pd.Series(dauer_arr).clip(lower=1.0)
+    tagespreis = (df_sauber["budget_eur"].astype(float).values / dauer.values).clip(
         lower=TAGESPREIS_MIN, upper=TAGESPREIS_MAX
     )
+    tagespreis = pd.Series(tagespreis)
 
     # Filtere Ausreißer (Clipping bedeutet: leicht verschobene Werte bleiben)
     maske_valid = tagespreis.between(TAGESPREIS_MIN, TAGESPREIS_MAX)
@@ -194,11 +229,9 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
 
     _plot_tagespreis_verteilung(tagespreis)
     logger.info(
-        "[Tagespreis] Verteilung (EUR/Tag):\n"
-        "  Median: %8,.0f  |  p25: %8,.0f  |  p75: %8,.0f\n"
-        "  Min:    %8,.0f  |  Max: %8,.0f  |  n=%d",
-        tagespreis.median(), tagespreis.quantile(0.25), tagespreis.quantile(0.75),
-        tagespreis.min(), tagespreis.max(), len(tagespreis),
+        "[Tagespreis] Verteilung (EUR/Tag): Median=%d | p25=%d | p75=%d | Min=%d | Max=%d | n=%d",
+        int(tagespreis.median()), int(tagespreis.quantile(0.25)), int(tagespreis.quantile(0.75)),
+        int(tagespreis.min()), int(tagespreis.max()), len(tagespreis),
     )
 
     y_log = np.log(tagespreis.values.astype(np.float64))
