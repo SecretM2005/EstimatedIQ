@@ -140,11 +140,11 @@ def _compute_tag_rate_lookup(df_train: pd.DataFrame) -> dict:
     )
 
     # Nur Typen mit ≥3 Datenpunkten bekommen eigenen Median
-    gruppengroessen = df_r.groupby("projekttyp").size()
+    gruppengroessen = df_r.groupby("projekttyp", observed=True).size()
     valide = gruppengroessen[gruppengroessen >= 3].index
     lookup = (
         df_r[df_r["projekttyp"].isin(valide)]
-        .groupby("projekttyp")["tagesrate"]
+        .groupby("projekttyp", observed=True)["tagesrate"]
         .median()
         .to_dict()
     )
@@ -155,9 +155,10 @@ def _compute_tag_rate_lookup(df_train: pd.DataFrame) -> dict:
 def _wende_tag_rate_an(df: pd.DataFrame, lookup: dict) -> pd.DataFrame:
     df = df.copy()
     global_rate = lookup.get("__global__", 5000.0)
-    df["tag_rate_ref"] = (
-        df["projekttyp"].map(lookup).fillna(global_rate).astype("float32")
-    )
+    raw = df["projekttyp"].map(lookup).fillna(global_rate)
+    # log1p-Transformation: bringt €/Tag-Werte (0–100.000) in denselben Größenbereich
+    # wie die anderen Features und verhindert numerischen Overflow bei expm1.
+    df["tag_rate_ref"] = np.log1p(raw.astype(float)).astype("float32")
     return df
 
 
@@ -337,8 +338,9 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
     df_train = _wende_tag_rate_an(df_train, tag_rate_lookup)
     df_test  = _wende_tag_rate_an(df_test,  tag_rate_lookup)
     logger.info(
-        "[v3] Tag-Rate-Lookup: %d Projekttypen | globale Tagesrate: %,.0f €/Tag",
-        len(tag_rate_lookup) - 1, tag_rate_lookup.get("__global__", 0),
+        "[v3] Tag-Rate-Lookup: %d Projekttypen | globale Tagesrate: %s €/Tag",
+        len(tag_rate_lookup) - 1,
+        f"{tag_rate_lookup.get('__global__', 0):,.0f}",
     )
 
     # Feature-Matrizen
@@ -367,9 +369,10 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
     )
     modell.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
 
-    y_pred_log = modell.predict(X_test)
+    # float64 + Clip auf realistischen Budget-Bereich (log1p(500M) ≈ 20.1)
+    y_pred_log = np.clip(modell.predict(X_test).astype(np.float64), 0.0, 21.0)
     y_pred_eur = np.expm1(y_pred_log)
-    y_true_eur = np.expm1(y_test)
+    y_true_eur = np.expm1(y_test.astype(np.float64))
 
     rmse_eur = float(np.sqrt(mean_squared_error(y_true_eur, y_pred_eur)))
     r2       = float(r2_score(y_true_eur, y_pred_eur))
