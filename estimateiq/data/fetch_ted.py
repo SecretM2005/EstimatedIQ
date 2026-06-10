@@ -61,10 +61,8 @@ FIELDS = [
     "main-classification-part",      # CPV-Code(s) Teil-Ebene
     "estimated-value-lot",           # Geschätzter Auftragswert    ["420000.00"]
     "estimated-value-cur-lot",       # Währung                     ["EUR"]
-    "total-value",                   # Vergebener Gesamtwert (CAN) – Pflichtfeld
+    "total-value",                   # Vergebener Gesamtwert (CAN) – immer vorhanden
     "total-value-cur",               # Währung Gesamtwert          ["EUR"]
-    "awarded-value-lot",             # Zugeschlagener Wert je Los  (CAN, Fallback)
-    "awarded-value-cur-lot",         # Währung zugeschlagener Wert (CAN, Fallback)
     "buyer-country",                 # Land des Auftraggebers      ["DEU"]
     "contract-duration-end-date-lot",  # Laufzeitende              ["2026-08-16+02:00"]
     "contract-duration-end-date-part", # Laufzeitende Teil-Ebene
@@ -269,16 +267,14 @@ class TedApiClient:
             or self._extrahiere_text(raw.get("main-classification-part"))
         )
 
-        # Budget: Schätzwert (CN) → Gesamtwert (CAN) → Los-Vergabewert (CAN, Fallback)
+        # Budget: Schätzwert (CN) → vergebener Gesamtwert (CAN, Pflichtfeld)
         wert = (
             self._extrahiere_wert(raw.get("estimated-value-lot"))
             or self._extrahiere_wert(raw.get("total-value"))
-            or self._extrahiere_wert(raw.get("awarded-value-lot"))
         )
         waehrung = (
             self._extrahiere_waehrung(raw.get("estimated-value-cur-lot"))
             or self._extrahiere_waehrung(raw.get("total-value-cur"))
-            or self._extrahiere_waehrung(raw.get("awarded-value-cur-lot"))
         )
 
         # Land: ISO alpha-3 → alpha-2
