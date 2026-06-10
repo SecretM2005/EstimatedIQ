@@ -16,9 +16,14 @@ from pydantic import BaseModel, Field, field_validator
 from estimateiq.models.bert_extractor import extrahiere_features
 from estimateiq.models.risk_model import predict as predict_risk
 
-# Kostenschätzung: v2 (BERT-Features) wenn trainiert, sonst v1
+# Kostenschätzung: neuestes verfügbares Modell automatisch erkennen (v3 > v2 > v1)
+from estimateiq.models.cost_model_v3 import MODELL_PKL as _V3_PKL
 from estimateiq.models.cost_model_v2 import MODELL_PKL as _V2_PKL
-if _V2_PKL.exists():
+if _V3_PKL.exists():
+    from estimateiq.models.cost_model_v3 import predict as predict_cost
+    _COST_MODEL_PKL = _V3_PKL
+    _COST_MODEL_VERSION = "3.0"
+elif _V2_PKL.exists():
     from estimateiq.models.cost_model_v2 import predict as predict_cost
     _COST_MODEL_PKL = _V2_PKL
     _COST_MODEL_VERSION = "2.0"
