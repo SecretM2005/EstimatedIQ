@@ -6,6 +6,7 @@ Dokumentation: https://docs.ted.europa.eu/api/latest/index.html
 
 import time
 import logging
+from pathlib import Path
 from typing import Iterator
 
 import httpx
@@ -19,12 +20,13 @@ logger = logging.getLogger(__name__)
 
 TED_API_BASE       = "https://api.ted.europa.eu/v3"
 TED_SEARCH_URL     = f"{TED_API_BASE}/notices/search"
-PAGE_SIZE_MAX      = 100   # max 250 laut Doku; 100 ist ein robuster Wert
+PAGE_SIZE_MAX      = 100
 
-# DACH-Ländercodes (v3 API nutzt ISO 3166-1 alpha-3)
 DACH_QUERY_CODES   = ["DEU", "AUT", "CHE"]
-# Rückgabe-Konvertierung → 2-Buchstaben für preprocess.py
-COUNTRY_3_TO_2 = {"DEU": "DE", "AUT": "AT", "CHE": "CH"}
+COUNTRY_3_TO_2     = {"DEU": "DE", "AUT": "AT", "CHE": "CH"}
+
+RAW_DATA_DIR       = Path("data")
+JAHRE_DEFAULT      = [2022, 2023, 2024]
 
 # ---------------------------------------------------------------------------
 # Felder, die aus der API abgerufen werden (eForms-Feldnamen)
@@ -344,32 +346,77 @@ class TedApiClient:
 
 
 # ---------------------------------------------------------------------------
-# Convenience-Funktion
+# Convenience-Funktionen
 # ---------------------------------------------------------------------------
 
 def fetch_and_save(
-    output_path: str = "data/raw_notices.jsonl",
+    output_path: str | Path | None = None,
     countries: list[str] | None = None,
     year: int | None = None,
     max_pages: int | None = None,
 ) -> int:
     """
-    Ruft TED-Ausschreibungen ab und speichert sie als JSON Lines (streambar, append-fähig).
+    Ruft TED-Ausschreibungen ab und speichert sie als JSON Lines.
     Gibt die Anzahl gespeicherter Datensätze zurück.
+
+    Wenn output_path nicht angegeben wird, wird automatisch
+    data/raw_notices_{year}.jsonl verwendet.
     """
     import json
-    import os
 
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    if output_path is None:
+        suffix = f"_{year}" if year else ""
+        output_path = RAW_DATA_DIR / f"raw_notices{suffix}.jsonl"
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     gespeichert = 0
-    with TedApiClient() as client, open(output_path, "w", encoding="utf-8") as f:
+    with TedApiClient() as client, output_path.open("w", encoding="utf-8") as f:
         for notice in client.fetch_notices(countries=countries, year=year, max_pages=max_pages):
             f.write(json.dumps(notice.model_dump(), ensure_ascii=False) + "\n")
             gespeichert += 1
 
     logger.info("Gespeichert: %d Ausschreibungen → %s", gespeichert, output_path)
     return gespeichert
+
+
+def fetch_dach_alle_jahre(
+    output_dir: str | Path = RAW_DATA_DIR,
+    jahre: list[int] = JAHRE_DEFAULT,
+    max_pages: int | None = None,
+) -> dict[int, int]:
+    """
+    Ruft DACH IT-Ausschreibungen für mehrere Jahre ab.
+    Speichert jedes Jahr in eine eigene Datei: raw_notices_{jahr}.jsonl
+
+    Args:
+        output_dir:  Zielverzeichnis
+        jahre:       Liste der Jahrgänge (Standard: 2022, 2023, 2024)
+        max_pages:   Maximale Seitenzahl pro Jahr (None = alle)
+
+    Returns:
+        Dict {jahr: anzahl_datensaetze}
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ergebnisse: dict[int, int] = {}
+
+    for jahr in jahre:
+        pfad = output_dir / f"raw_notices_{jahr}.jsonl"
+        logger.info("=== Jahrgang %d → %s ===", jahr, pfad)
+        anzahl = fetch_and_save(
+            output_path=pfad,
+            countries=DACH_QUERY_CODES,
+            year=jahr,
+            max_pages=max_pages,
+        )
+        ergebnisse[jahr] = anzahl
+        logger.info("Jahrgang %d: %d Ausschreibungen gespeichert.", jahr, anzahl)
+
+    gesamt = sum(ergebnisse.values())
+    logger.info("Alle Jahrgänge abgeschlossen. Gesamt: %d Ausschreibungen.", gesamt)
+    return ergebnisse
 
 
 # ---------------------------------------------------------------------------
@@ -379,10 +426,13 @@ def fetch_and_save(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    anzahl = fetch_and_save(
-        output_path="data/raw_notices.jsonl",
-        countries=DACH_QUERY_CODES,
-        year=2024,
-        max_pages=5,   # ~500 Einträge zum Testen
+    ergebnisse = fetch_dach_alle_jahre(
+        jahre=JAHRE_DEFAULT,
+        max_pages=None,   # alle verfügbaren Seiten
     )
-    print(f"\nAbgeschlossen: {anzahl} Ausschreibungen gespeichert.")
+
+    print("\n" + "─" * 40)
+    for jahr, anzahl in ergebnisse.items():
+        print(f"  {jahr}: {anzahl:>6,} Ausschreibungen")
+    print(f"  {'Gesamt':}: {sum(ergebnisse.values()):>6,}")
+    print("─" * 40 + "\n")

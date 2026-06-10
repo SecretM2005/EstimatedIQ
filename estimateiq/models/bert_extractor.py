@@ -274,42 +274,54 @@ def berechne_embeddings_gecacht(
     cache_pfad: Path | None = EMBEDDINGS_CACHE_PFAD,
 ) -> np.ndarray:
     """
-    Berechnet Mean-Pooling-Embeddings mit Disk-Cache.
-
-    Wenn cache_pfad existiert und die gespeicherte Zeilenzahl mit len(texte)
-    übereinstimmt, wird der Cache direkt geladen (spart 60–90 Minuten CPU-Zeit).
-    Sonst werden Embeddings neu berechnet und gespeichert.
+    Inkrementeller Hash-Cache: Nur Texte, die noch nicht im Cache liegen,
+    werden durch BERT gerechnet. Bekannte Texte werden sofort aus dem Cache
+    geladen — auch wenn neue Jahrgänge hinzukommen.
 
     Args:
         texte:      Liste der Beschreibungstexte
-        cache_pfad: Pfad zur .npy-Datei; None = kein Cache
+        cache_pfad: Pfad zur .pkl-Datei mit dem Cache-Dict; None = kein Cache
 
     Returns:
         Float32-Array der Form (len(texte), 768)
     """
+    import hashlib
+    import pickle as _pickle
+
+    # Cache-Dict: {sha1_hex: embedding_vector (768,)}
+    cache: dict[str, np.ndarray] = {}
+
     if cache_pfad and cache_pfad.exists():
         try:
-            gespeichert = np.load(str(cache_pfad))
-            if gespeichert.shape[0] == len(texte):
-                logger.info("[BERT] Embeddings aus Cache geladen: %s (%d × %d)",
-                            cache_pfad, *gespeichert.shape)
-                return gespeichert
-            logger.warning(
-                "[BERT] Cache-Größe passt nicht (%d Zeilen gespeichert, %d erwartet) – berechne neu.",
-                gespeichert.shape[0], len(texte),
-            )
+            with cache_pfad.open("rb") as fh:
+                cache = _pickle.load(fh)
+            logger.info("[BERT] Cache geladen: %d Einträge (%s)", len(cache), cache_pfad)
         except Exception as exc:
-            logger.warning("[BERT] Cache nicht lesbar: %s – berechne neu.", exc)
+            logger.warning("[BERT] Cache nicht lesbar: %s – starte leer.", exc)
+            cache = {}
 
-    emb = _einbetten(texte)
+    # Welche Texte fehlen noch im Cache?
+    hashes = [hashlib.sha1(t.encode("utf-8", errors="replace")).hexdigest() for t in texte]
+    fehlende_idx = [i for i, h in enumerate(hashes) if h not in cache]
 
-    if cache_pfad:
-        cache_pfad.parent.mkdir(parents=True, exist_ok=True)
-        np.save(str(cache_pfad), emb)
-        logger.info("[BERT] Embeddings in Cache gespeichert: %s (%d × %d)",
-                    cache_pfad, *emb.shape)
+    if fehlende_idx:
+        logger.info("[BERT] %d/%d Texte nicht im Cache – berechne Embeddings...",
+                    len(fehlende_idx), len(texte))
+        neue_texte = [texte[i] for i in fehlende_idx]
+        neue_embs  = _einbetten(neue_texte)
+        for idx, emb in zip(fehlende_idx, neue_embs):
+            cache[hashes[idx]] = emb
 
-    return emb
+        if cache_pfad:
+            cache_pfad.parent.mkdir(parents=True, exist_ok=True)
+            with cache_pfad.open("wb") as fh:
+                _pickle.dump(cache, fh)
+            logger.info("[BERT] Cache aktualisiert: jetzt %d Einträge → %s",
+                        len(cache), cache_pfad)
+    else:
+        logger.info("[BERT] Alle %d Embeddings aus Cache geladen.", len(texte))
+
+    return np.stack([cache[h] for h in hashes]).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------

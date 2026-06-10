@@ -161,12 +161,17 @@ def train(df: pd.DataFrame, embeddings: np.ndarray | None = None, test_anteil: f
                 "PCA-Embeddings + numerisch" if embeddings is not None else "nur numerisch")
 
     df = _feature_engineering(df)
+    # Wenn nur Budget-Zeilen übergeben wurden (aus train.py), sind alle Zeilen gültig.
+    # Falls der volle DataFrame übergeben wird, filtern wir hier.
     df_sauber = df[df["budget_eur"].notna()].reset_index(drop=True)
 
-    # Embeddings auf Zeilen mit bekanntem Budget einschränken
-    if embeddings is not None:
+    if embeddings is not None and len(embeddings) == len(df):
+        # Voller DataFrame mit Embeddings → Budget-Zeilen ausschneiden
         maske = df["budget_eur"].notna().values
         embeddings_sauber = embeddings[maske]
+    elif embeddings is not None:
+        # Bereits vorgefilterter DataFrame (len == len(df_sauber))
+        embeddings_sauber = embeddings
     else:
         embeddings_sauber = None
 

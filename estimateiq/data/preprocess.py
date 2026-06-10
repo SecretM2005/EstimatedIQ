@@ -70,29 +70,65 @@ CPV_PROJEKTTYPEN: list[tuple[range, str]] = [
 # Schritt 1 – Laden
 # ---------------------------------------------------------------------------
 
-def lade_rohdaten(pfad: str | Path) -> list[dict]:
-    """Lädt eine JSON-Lines-Datei zeilenweise. Jede Zeile = ein TedNotice-Dict."""
-    pfad = Path(pfad)
-    if not pfad.exists():
-        raise FileNotFoundError(f"Rohdaten nicht gefunden: {pfad}")
+def lade_rohdaten(pfad: str | Path | None = None) -> list[dict]:
+    """
+    Lädt JSON-Lines-Dateien.
+
+    - pfad=None oder pfad="data/": liest alle data/raw_notices_*.jsonl
+      (Mehrjahresdaten), mit Fallback auf data/raw_notices.jsonl
+    - pfad=spezifische Datei: liest nur diese eine Datei
+    """
+    from glob import glob
+
+    pfade: list[Path] = []
+
+    if pfad is None or Path(str(pfad)).is_dir():
+        verzeichnis = Path(pfad) if pfad else Path("data")
+        # Alle Jahres-Dateien: raw_notices_2022.jsonl, raw_notices_2023.jsonl, ...
+        jahresdateien = sorted(verzeichnis.glob("raw_notices_*.jsonl"))
+        if jahresdateien:
+            pfade = jahresdateien
+            logger.info("[Laden] Gefundene Jahres-Dateien: %s",
+                        ", ".join(p.name for p in pfade))
+        else:
+            # Rückfall auf alte Einzeldatei
+            alt = verzeichnis / "raw_notices.jsonl"
+            if alt.exists():
+                pfade = [alt]
+                logger.info("[Laden] Verwende Legacy-Datei: %s", alt)
+            else:
+                raise FileNotFoundError(
+                    f"Keine Rohdaten in {verzeichnis}. "
+                    "Bitte zuerst: python -m estimateiq.data.fetch_ted"
+                )
+    else:
+        pfad = Path(pfad)
+        if not pfad.exists():
+            raise FileNotFoundError(f"Rohdaten nicht gefunden: {pfad}")
+        pfade = [pfad]
 
     datensaetze: list[dict] = []
     fehlerhafte_zeilen = 0
 
-    with pfad.open(encoding="utf-8") as f:
-        for i, zeile in enumerate(f, start=1):
-            zeile = zeile.strip()
-            if not zeile:
-                continue
-            try:
-                datensaetze.append(json.loads(zeile))
-            except json.JSONDecodeError:
-                fehlerhafte_zeilen += 1
-                logger.warning("Zeile %d: ungültiges JSON, übersprungen.", i)
+    for quelldatei in pfade:
+        datei_count = 0
+        with quelldatei.open(encoding="utf-8") as f:
+            for i, zeile in enumerate(f, start=1):
+                zeile = zeile.strip()
+                if not zeile:
+                    continue
+                try:
+                    datensaetze.append(json.loads(zeile))
+                    datei_count += 1
+                except json.JSONDecodeError:
+                    fehlerhafte_zeilen += 1
+                    logger.warning("%s Zeile %d: ungültiges JSON, übersprungen.",
+                                   quelldatei.name, i)
+        logger.info("[Laden] %s: %d Datensätze", quelldatei.name, datei_count)
 
     logger.info(
-        "[Laden] %d Datensätze geladen, %d fehlerhafte Zeilen übersprungen.",
-        len(datensaetze), fehlerhafte_zeilen,
+        "[Laden] Gesamt: %d Datensätze aus %d Datei(en), %d fehlerhafte Zeilen.",
+        len(datensaetze), len(pfade), fehlerhafte_zeilen,
     )
     return datensaetze
 
@@ -390,7 +426,7 @@ def zeige_statistik(df: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 
 def preprocess_pipeline(
-    eingabe_pfad: str | Path = "data/raw_notices.jsonl",
+    eingabe_pfad: str | Path | None = None,
     ausgabe_verzeichnis: str | Path = "data/processed",
 ) -> pd.DataFrame:
     """
@@ -398,11 +434,8 @@ def preprocess_pipeline(
       Laden → Konvertieren → Ausreißer bereinigen → Typen setzen → Speichern → Statistik
 
     Args:
-        eingabe_pfad:        Pfad zur raw_notices.jsonl von fetch_ted.py
+        eingabe_pfad:        Pfad zu Rohdaten; None = automatisch alle data/raw_notices_*.jsonl
         ausgabe_verzeichnis: Zielordner für notices.parquet und notices.csv
-
-    Returns:
-        Fertiger, bereinigter DataFrame mit 7 Spalten.
     """
     logger.info("=== EstimateIQ Preprocessing gestartet ===")
 

@@ -51,23 +51,31 @@ def lade_daten() -> pd.DataFrame:
 
 def bert_anreichern(df: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
     """
-    BERT-Embeddings berechnen (mit Cache) und Scalar-Features ableiten.
+    BERT nur für Zeilen mit bekanntem Budget berechnen (~33 % der Daten).
+    Der inkrementelle Hash-Cache stellt sicher, dass bei neuen Jahrgängen
+    nur die wirklich neuen Texte durch BERT gerechnet werden.
 
     Returns:
-        (df_angereichert, embeddings_matrix)
+        (df_budget_angereichert, embeddings_matrix)
+        – der zurückgegebene DataFrame enthält nur Zeilen mit budget_eur != NaN
     """
     from estimateiq.models.bert_extractor import anreichere_dataframe, berechne_embeddings_gecacht
 
-    texte = df["beschreibung"].fillna("").tolist()
-    logger.info("Lade/Berechne BERT-Embeddings für %d Texte...", len(texte))
+    df_budget = df[df["budget_eur"].notna()].reset_index(drop=True)
+    n_gesamt  = len(df)
+    n_budget  = len(df_budget)
+    logger.info(
+        "BERT nur für Budget-Zeilen: %d/%d (%.0f%% der Daten)",
+        n_budget, n_gesamt, 100 * n_budget / n_gesamt,
+    )
+
+    texte = df_budget["beschreibung"].fillna("").tolist()
     t0 = time.time()
     embeddings = berechne_embeddings_gecacht(texte)
-    dauer_emb = time.time() - t0
-    logger.info("Embeddings bereit in %.0f Sekunden.", dauer_emb)
+    logger.info("Embeddings bereit in %.0f Sekunden.", time.time() - t0)
 
-    logger.info("Leite BERT-Scalar-Features ab...")
     t1 = time.time()
-    df_angereichert = anreichere_dataframe(df)
+    df_angereichert = anreichere_dataframe(df_budget)
     logger.info("Scalar-Features abgeleitet in %.0f Sekunden.", time.time() - t1)
 
     return df_angereichert, embeddings
