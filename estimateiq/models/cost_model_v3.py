@@ -302,7 +302,7 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
     Trainiert Cost Model v3.
     Huber-Loss, 75 SVD-Komp., neue Features (Wortanzahl, Deadline, Tagesrate-Ref.).
     """
-    logger.info("[Training v3] Starte (TF-IDF+SVD, Huber-Loss, 86 Features)...")
+    logger.info("[Training v3] Starte (TF-IDF+SVD, 86 Features, log1p-Ziel)...")
 
     df = _feature_engineering(df)
     df_sauber = df[df["budget_eur"].notna()].reset_index(drop=True)

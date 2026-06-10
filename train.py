@@ -101,7 +101,7 @@ def drucke_zusammenfassung(ergebnisse: dict) -> None:
 
     if "v3" in ergebnisse:
         m = ergebnisse["v3"]
-        print(f"\n  Cost Model v3 (Huber-Loss+SVD, {m.get('n_features','?')} Features)")
+        print(f"\n  Cost Model v3 (TF-IDF+SVD+neue Features, {m.get('n_features','?')} Features)")
         print(f"    RMSE (EUR, gesamt): {m['rmse_eur']:>12,.0f} €")
         print(f"    RMSE (EUR, ≤p95):   {m['rmse_p95']:>12,.0f} €  "
               f"(p95={m.get('p95_budget_eur',0)/1e6:.1f} M €)")
