@@ -7,16 +7,21 @@ Ablauf:
   3. Cost Model v2 trainieren  (TF-IDF + SVD Textfeatures, kein BERT nötig)
   4. Cost Model v3 trainieren  (v2 + neue Features, Huber-Loss)
   5. Risk Model trainieren
-  6. Metriken ausgeben
+  6. [NEU] Laufzeit-Modell trainieren  (Stufe 1: ALLE Projekte mit dauer_tage)
+  7. [NEU] Overhead-Modell trainieren  (Stufe 2: Projekte mit Budget)
+  8. Metriken ausgeben
 
 Verwendung:
   python train.py [--only MODEL]
 
 Optionen:
-  --only v1     Nur Cost Model v1
-  --only v2     Nur Cost Model v2
-  --only v3     Nur Cost Model v3
-  --only risk   Nur Risk Model
+  --only v1        Nur Cost Model v1
+  --only v2        Nur Cost Model v2
+  --only v3        Nur Cost Model v3
+  --only risk      Nur Risk Model
+  --only duration  Nur Laufzeit-Modell (Stufe 1, zweistufige Pipeline)
+  --only overhead  Nur Overhead-Modell (Stufe 2, zweistufige Pipeline)
+  --only pipeline  Beide Pipeline-Modelle (duration + overhead)
 """
 
 import argparse
@@ -74,6 +79,20 @@ def trainiere_risk(df: pd.DataFrame) -> dict:
     return train(df)
 
 
+def trainiere_duration(df: pd.DataFrame) -> dict:
+    from estimateiq.models.duration_model import train
+    logger.info("─" * 50)
+    logger.info("Trainiere Laufzeit-Modell Stufe 1 (ALLE Projekte mit dauer_tage, TF-IDF+SVD)...")
+    return train(df)
+
+
+def trainiere_overhead(df: pd.DataFrame) -> dict:
+    from estimateiq.models.overhead_model import train
+    logger.info("─" * 50)
+    logger.info("Trainiere Overhead-Modell Stufe 2 (Projekte mit Budget+Laufzeit)...")
+    return train(df)
+
+
 def drucke_zusammenfassung(ergebnisse: dict) -> None:
     trenner = "═" * 62
     print(f"\n{trenner}")
@@ -120,13 +139,38 @@ def drucke_zusammenfassung(ergebnisse: dict) -> None:
         print(f"    Train/Test:    {m['n_train']:,} / {m['n_val']:,}")
         print(f"    Klassen:       {m['classes']}")
 
+    if "duration" in ergebnisse:
+        m = ergebnisse["duration"]
+        print(f"\n  Laufzeit-Modell Stufe 1 ({m.get('n_features','?')} Features)")
+        print(f"    RMSE (Tage):   {m['rmse_tage']:>12.1f}")
+        print(f"    MAE  (Tage):   {m['mae_tage']:>12.1f}")
+        print(f"    R²  (linear):  {m['r2']:>12.4f}")
+        print(f"    R²  (log):     {m['r2_log']:>12.4f}")
+        print(f"    MdAPE:         {m['mape']:>11.1f}%")
+        print(f"    Train/Test:    {m['n_train']:,} / {m['n_test']:,}  "
+              f"(davon {m['n_mit_budget']:,} mit Budget)")
+
+    if "overhead" in ergebnisse:
+        m = ergebnisse["overhead"]
+        print(f"\n  Overhead-Modell Stufe 2")
+        print(f"    RMSE (log):    {m['rmse_log']:>12.4f}")
+        print(f"    R²  (log):     {m['r2_log']:>12.4f}")
+        print(f"    Overhead Med:  {m['overhead_median']:>12.2f}×  "
+              f"[{m['overhead_p25']:.2f}× – {m['overhead_p75']:.2f}×]")
+        print(f"    Train/Test:    {m['n_train']:,} / {m['n_test']:,}")
+        print(f"    Residual CI:   p25={m['rq_p25']:+.3f}  p75={m['rq_p75']:+.3f}  "
+              f"(×{1/abs(m['rq_p25']):.1f} Spread im log-Raum)")
+
     print(f"\n{trenner}\n")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="EstimateIQ Trainings-Workflow")
-    parser.add_argument("--only", choices=["v1", "v2", "v3", "risk"],
-                        help="Nur ein bestimmtes Modell trainieren")
+    parser.add_argument(
+        "--only",
+        choices=["v1", "v2", "v3", "risk", "duration", "overhead", "pipeline"],
+        help="Nur ein bestimmtes Modell trainieren",
+    )
     args = parser.parse_args()
 
     df = lade_daten()
@@ -143,6 +187,12 @@ def main() -> None:
 
     if args.only is None or args.only == "risk":
         ergebnisse["risk"] = trainiere_risk(df)
+
+    if args.only in (None, "duration", "pipeline"):
+        ergebnisse["duration"] = trainiere_duration(df)
+
+    if args.only in (None, "overhead", "pipeline"):
+        ergebnisse["overhead"] = trainiere_overhead(df)
 
     drucke_zusammenfassung(ergebnisse)
 
