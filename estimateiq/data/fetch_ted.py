@@ -1,6 +1,11 @@
 """
 TED Europa API Connector – v3 (api.ted.europa.eu)
 Ruft öffentliche EU-Ausschreibungen ab und filtert auf IT-relevante CPV-Codes (72*).
+
+Zwei Abruf-Modi:
+  CN  (Contract Notices)       – Vorabbekanntmachungen, ggf. Schätzwert
+  CAN (Contract Award Notices) – Vergabebekanntmachungen, stets mit Auftragswert
+
 Dokumentation: https://docs.ted.europa.eu/api/latest/index.html
 """
 
@@ -28,6 +33,18 @@ COUNTRY_3_TO_2     = {"DEU": "DE", "AUT": "AT", "CHE": "CH"}
 RAW_DATA_DIR       = Path("data")
 JAHRE_DEFAULT      = [2022, 2023, 2024]
 
+# TED Notice-Typen für Vergabebekanntmachungen (CAN)
+# NT=can* deckt alle Untervarianten ab (Standard, Sozial, Sektoren, Verteidigung).
+# veat = freiwillige Ex-ante-Transparenzbekanntmachung (enthält ebenfalls Auftragswert).
+CAN_TYPEN = [
+    "can-standard",
+    "can-social",
+    "can-defu",
+    "can-utilities",
+    "can-cm",
+    "veat",
+]
+
 # ---------------------------------------------------------------------------
 # Felder, die aus der API abgerufen werden (eForms-Feldnamen)
 # ---------------------------------------------------------------------------
@@ -44,8 +61,10 @@ FIELDS = [
     "main-classification-part",      # CPV-Code(s) Teil-Ebene
     "estimated-value-lot",           # Geschätzter Auftragswert    ["420000.00"]
     "estimated-value-cur-lot",       # Währung                     ["EUR"]
-    "total-value",                   # Vergebener Gesamtwert       (Zahl)
+    "total-value",                   # Vergebener Gesamtwert (CAN) – Pflichtfeld
     "total-value-cur",               # Währung Gesamtwert          ["EUR"]
+    "awarded-value-lot",             # Zugeschlagener Wert je Los  (CAN, Fallback)
+    "awarded-value-cur-lot",         # Währung zugeschlagener Wert (CAN, Fallback)
     "buyer-country",                 # Land des Auftraggebers      ["DEU"]
     "contract-duration-end-date-lot",  # Laufzeitende              ["2026-08-16+02:00"]
     "contract-duration-end-date-part", # Laufzeitende Teil-Ebene
@@ -67,6 +86,7 @@ class TedNotice(BaseModel):
     currency:                    str | None = None
     country:                     str | None = None   # 2-Buchstaben: DE/AT/CH
     duration_end:                str | None = None   # Format: YYYYMMDD
+    notice_type:                 str | None = None   # cn-standard | can-standard | ...
     raw:                         dict = {}
 
 
@@ -87,17 +107,25 @@ class TedApiClient:
 
     # ------------------------------------------------------------------ Query
 
-    def _build_query(self, countries: list[str] | None = None, year: int | None = None) -> str:
+    def _build_query(
+        self,
+        countries: list[str] | None = None,
+        year: int | None = None,
+        nur_vergaben: bool = False,
+    ) -> str:
         """
         Baut die Expert-Query für die TED v3 API zusammen.
 
-        Syntax-Änderungen gegenüber v2:
-          - CPV-Bereich: PC=72*  (kein Bereichsoperator [ ] mehr)
-          - Ländercodes: buyer-country=DEU  (ISO alpha-3 statt alpha-2)
-          - Datumsfilter: PD>=YYYYMMDD  (funktioniert weiterhin)
-          - Dokumenttyp TD=3/TD=7 entfällt (Typ als notice-type im Response)
+        Args:
+            countries:    ISO alpha-3 Ländercodes (z. B. ['DEU','AUT','CHE'])
+            year:         Filtert auf ein bestimmtes Kalenderjahr
+            nur_vergaben: True → nur Contract Award Notices (CAN), enthält Auftragswert
         """
         filter_teile = ["PC=72*"]
+
+        if nur_vergaben:
+            nt_ausdruck = " OR ".join(f"NT={t}" for t in CAN_TYPEN)
+            filter_teile.append(f"({nt_ausdruck})")
 
         if countries:
             laender_ausdruck = " OR ".join(f"buyer-country={c}" for c in countries)
@@ -241,14 +269,16 @@ class TedApiClient:
             or self._extrahiere_text(raw.get("main-classification-part"))
         )
 
-        # Budget: geschätzter Wert → Gesamtwert vergabe
+        # Budget: Schätzwert (CN) → Gesamtwert (CAN) → Los-Vergabewert (CAN, Fallback)
         wert = (
             self._extrahiere_wert(raw.get("estimated-value-lot"))
             or self._extrahiere_wert(raw.get("total-value"))
+            or self._extrahiere_wert(raw.get("awarded-value-lot"))
         )
         waehrung = (
             self._extrahiere_waehrung(raw.get("estimated-value-cur-lot"))
             or self._extrahiere_waehrung(raw.get("total-value-cur"))
+            or self._extrahiere_waehrung(raw.get("awarded-value-cur-lot"))
         )
 
         # Land: ISO alpha-3 → alpha-2
@@ -281,6 +311,7 @@ class TedApiClient:
             currency          = waehrung,
             country           = land_2,
             duration_end      = laufzeit_ende,
+            notice_type       = raw.get("notice-type"),
             raw               = raw,
         )
 
@@ -291,16 +322,18 @@ class TedApiClient:
         countries: list[str] | None = None,
         year: int | None = None,
         max_pages: int | None = None,
+        nur_vergaben: bool = False,
     ) -> Iterator[TedNotice]:
         """
         Generator: Liefert alle IT-Ausschreibungen seitenweise.
 
         Args:
-            countries:  3-Buchstaben-Codes (z. B. ['DEU','AUT','CHE']); None = alle
-            year:       Filtert auf ein bestimmtes Jahr
-            max_pages:  Maximale Seitenanzahl (None = alle)
+            countries:    3-Buchstaben-Codes (z. B. ['DEU','AUT','CHE']); None = alle
+            year:         Filtert auf ein bestimmtes Jahr
+            max_pages:    Maximale Seitenanzahl (None = alle)
+            nur_vergaben: True → nur Contract Award Notices (CAN)
         """
-        query = self._build_query(countries=countries, year=year)
+        query = self._build_query(countries=countries, year=year, nur_vergaben=nur_vergaben)
         logger.info("TED-Abfrage: %s", query)
 
         page           = 1
@@ -332,8 +365,14 @@ class TedApiClient:
             page += 1
 
     def fetch_dach_notices(self, year: int | None = None, max_pages: int | None = None) -> Iterator[TedNotice]:
-        """IT-Ausschreibungen aus Deutschland, Österreich und der Schweiz."""
+        """IT-Ausschreibungen (CN) aus Deutschland, Österreich und der Schweiz."""
         return self.fetch_notices(countries=DACH_QUERY_CODES, year=year, max_pages=max_pages)
+
+    def fetch_dach_award_notices(self, year: int | None = None, max_pages: int | None = None) -> Iterator[TedNotice]:
+        """IT-Vergabebekanntmachungen (CAN) aus DACH – enthalten stets Auftragswert."""
+        return self.fetch_notices(
+            countries=DACH_QUERY_CODES, year=year, max_pages=max_pages, nur_vergaben=True,
+        )
 
     def close(self):
         self.client.close()
@@ -354,31 +393,74 @@ def fetch_and_save(
     countries: list[str] | None = None,
     year: int | None = None,
     max_pages: int | None = None,
+    nur_vergaben: bool = False,
 ) -> int:
     """
     Ruft TED-Ausschreibungen ab und speichert sie als JSON Lines.
     Gibt die Anzahl gespeicherter Datensätze zurück.
 
-    Wenn output_path nicht angegeben wird, wird automatisch
-    data/raw_notices_{year}.jsonl verwendet.
+    Wenn output_path nicht angegeben wird:
+      - CN:  data/raw_notices_{year}.jsonl
+      - CAN: data/raw_notices_awards_{year}.jsonl
     """
     import json
 
     if output_path is None:
         suffix = f"_{year}" if year else ""
-        output_path = RAW_DATA_DIR / f"raw_notices{suffix}.jsonl"
+        prefix = "raw_notices_awards" if nur_vergaben else "raw_notices"
+        output_path = RAW_DATA_DIR / f"{prefix}{suffix}.jsonl"
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     gespeichert = 0
     with TedApiClient() as client, output_path.open("w", encoding="utf-8") as f:
-        for notice in client.fetch_notices(countries=countries, year=year, max_pages=max_pages):
+        for notice in client.fetch_notices(
+            countries=countries, year=year, max_pages=max_pages, nur_vergaben=nur_vergaben,
+        ):
             f.write(json.dumps(notice.model_dump(), ensure_ascii=False) + "\n")
             gespeichert += 1
 
-    logger.info("Gespeichert: %d Ausschreibungen → %s", gespeichert, output_path)
+    logger.info("Gespeichert: %d Bekanntmachungen → %s", gespeichert, output_path)
     return gespeichert
+
+
+def fetch_dach_alle_vergaben(
+    output_dir: str | Path = RAW_DATA_DIR,
+    jahre: list[int] = JAHRE_DEFAULT,
+    max_pages: int | None = None,
+) -> dict[int, int]:
+    """
+    Ruft DACH IT-Vergabebekanntmachungen (CAN) für mehrere Jahre ab.
+    Speichert jedes Jahr: data/raw_notices_awards_{jahr}.jsonl
+
+    Diese Dateien werden von preprocess.py automatisch erkannt
+    (Glob-Muster raw_notices_*.jsonl) und enthalten stets einen Auftragswert,
+    was die Budget-Label-Rate signifikant erhöht.
+
+    Returns:
+        Dict {jahr: anzahl_datensaetze}
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ergebnisse: dict[int, int] = {}
+
+    for jahr in jahre:
+        pfad = output_dir / f"raw_notices_awards_{jahr}.jsonl"
+        logger.info("=== CAN Jahrgang %d → %s ===", jahr, pfad)
+        anzahl = fetch_and_save(
+            output_path=pfad,
+            countries=DACH_QUERY_CODES,
+            year=jahr,
+            max_pages=max_pages,
+            nur_vergaben=True,
+        )
+        ergebnisse[jahr] = anzahl
+        logger.info("CAN Jahrgang %d: %d Vergabebekanntmachungen gespeichert.", jahr, anzahl)
+
+    gesamt = sum(ergebnisse.values())
+    logger.info("Alle CAN-Jahrgänge abgeschlossen. Gesamt: %d Vergaben.", gesamt)
+    return ergebnisse
 
 
 def fetch_dach_alle_jahre(
@@ -424,15 +506,53 @@ def fetch_dach_alle_jahre(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import argparse
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    ergebnisse = fetch_dach_alle_jahre(
-        jahre=JAHRE_DEFAULT,
-        max_pages=None,   # alle verfügbaren Seiten
+    parser = argparse.ArgumentParser(
+        description="TED-Daten abrufen (CN, CAN oder beides)"
     )
+    parser.add_argument(
+        "--modus",
+        choices=["cn", "can", "beides"],
+        default="beides",
+        help=(
+            "cn    = nur Ausschreibungen (Contract Notices)\n"
+            "can   = nur Vergaben (Contract Award Notices, haben stets Budget)\n"
+            "beides= beides abrufen (Standard)"
+        ),
+    )
+    parser.add_argument(
+        "--max-seiten", type=int, default=None,
+        help="Max. Seitenanzahl pro Jahr (None = alle, nützlich zum Testen)",
+    )
+    args = parser.parse_args()
 
-    print("\n" + "─" * 40)
-    for jahr, anzahl in ergebnisse.items():
-        print(f"  {jahr}: {anzahl:>6,} Ausschreibungen")
-    print(f"  {'Gesamt':}: {sum(ergebnisse.values()):>6,}")
-    print("─" * 40 + "\n")
+    ergebnisse_cn:  dict[int, int] = {}
+    ergebnisse_can: dict[int, int] = {}
+
+    if args.modus in ("cn", "beides"):
+        ergebnisse_cn = fetch_dach_alle_jahre(
+            jahre=JAHRE_DEFAULT, max_pages=args.max_seiten,
+        )
+
+    if args.modus in ("can", "beides"):
+        ergebnisse_can = fetch_dach_alle_vergaben(
+            jahre=JAHRE_DEFAULT, max_pages=args.max_seiten,
+        )
+
+    print("\n" + "═" * 48)
+    print("  TED-Abruf abgeschlossen")
+    print("═" * 48)
+    if ergebnisse_cn:
+        print("\n  Contract Notices (CN):")
+        for jahr, n in ergebnisse_cn.items():
+            print(f"    {jahr}: {n:>6,} Ausschreibungen")
+        print(f"    {'Gesamt':} {sum(ergebnisse_cn.values()):>6,}")
+    if ergebnisse_can:
+        print("\n  Contract Award Notices (CAN):")
+        for jahr, n in ergebnisse_can.items():
+            print(f"    {jahr}: {n:>6,} Vergaben")
+        print(f"    {'Gesamt':} {sum(ergebnisse_can.values()):>6,}")
+    print("═" * 48 + "\n")

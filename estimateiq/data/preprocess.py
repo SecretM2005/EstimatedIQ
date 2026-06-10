@@ -84,12 +84,17 @@ def lade_rohdaten(pfad: str | Path | None = None) -> list[dict]:
 
     if pfad is None or Path(str(pfad)).is_dir():
         verzeichnis = Path(pfad) if pfad else Path("data")
-        # Alle Jahres-Dateien: raw_notices_2022.jsonl, raw_notices_2023.jsonl, ...
+        # Lädt alle raw_notices_*.jsonl – inkl. raw_notices_awards_*.jsonl (CAN-Vergaben)
         jahresdateien = sorted(verzeichnis.glob("raw_notices_*.jsonl"))
         if jahresdateien:
             pfade = jahresdateien
-            logger.info("[Laden] Gefundene Jahres-Dateien: %s",
-                        ", ".join(p.name for p in pfade))
+            cn_dateien  = [p for p in pfade if "awards" not in p.name]
+            can_dateien = [p for p in pfade if "awards" in p.name]
+            logger.info(
+                "[Laden] %d CN-Dateien + %d CAN-Dateien: %s",
+                len(cn_dateien), len(can_dateien),
+                ", ".join(p.name for p in pfade),
+            )
         else:
             # Rückfall auf alte Einzeldatei
             alt = verzeichnis / "raw_notices.jsonl"
