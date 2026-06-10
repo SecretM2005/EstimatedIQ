@@ -152,14 +152,14 @@ def drucke_zusammenfassung(ergebnisse: dict) -> None:
 
     if "overhead" in ergebnisse:
         m = ergebnisse["overhead"]
-        print(f"\n  Overhead-Modell Stufe 2")
+        print(f"\n  Tagespreis-Modell Stufe 2 (budget_eur / dauer_tage)")
         print(f"    RMSE (log):    {m['rmse_log']:>12.4f}")
         print(f"    R²  (log):     {m['r2_log']:>12.4f}")
-        print(f"    Overhead Med:  {m['overhead_median']:>12.2f}×  "
-              f"[{m['overhead_p25']:.2f}× – {m['overhead_p75']:.2f}×]")
+        print(f"    Tagespreis Med: {m['overhead_median']:>10,.0f} €/Tag  "
+              f"[{m['overhead_p25']:,.0f} – {m['overhead_p75']:,.0f} €/Tag]")
         print(f"    Train/Test:    {m['n_train']:,} / {m['n_test']:,}")
         print(f"    Residual CI:   p25={m['rq_p25']:+.3f}  p75={m['rq_p75']:+.3f}  "
-              f"(×{1/abs(m['rq_p25']):.1f} Spread im log-Raum)")
+              f"(×{abs(m['rq_p75'] - m['rq_p25']):.2f} Spread im log-Raum)")
 
     print(f"\n{trenner}\n")
 

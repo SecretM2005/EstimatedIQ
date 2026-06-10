@@ -96,7 +96,8 @@ def validiere_pipeline(
 
     logger.info("[Validierung] Starte Batch-Schätzung für %d Projekte...", len(df))
 
-    ergebnisse = estimate_batch(df)
+    # verwende_tatsaechliche_dauer=False: echte End-to-End-Validierung, kein Datenleck
+    ergebnisse = estimate_batch(df, verwende_tatsaechliche_dauer=False)
 
     # Ergebnisse aufsammeln
     zeilen = []
@@ -110,7 +111,7 @@ def validiere_pipeline(
             "kosten_high":       ergebnis.kosten_high,
             "dauer_tage_pred":   ergebnis.dauer_tage,
             "dauer_tage_actual": float(zeile["dauer_tage"]) if pd.notna(zeile.get("dauer_tage")) else None,
-            "overhead_p50":      ergebnis.overhead_faktor_p50,
+            "tagespreis_p50":    ergebnis.tagespreis_p50,
             "personalkosten":    ergebnis.personalkosten,
             "projekttyp":        ergebnis.projekttyp,
             "region":            ergebnis.region,

@@ -1,33 +1,32 @@
 """
-EstimateIQ – Overhead-Modell (Stufe 2 der zweistufigen Kostenschätzung).
+EstimateIQ – Tagespreis-Modell (Stufe 2 der zweistufigen Kostenschätzung).
 
 Konzept:
-  Statt Budget direkt zu schätzen, modellieren wir den Overhead-Faktor:
+  Statt Budget direkt zu schätzen, modellieren wir den Tagespreis:
 
-    overhead_faktor = budget_eur / personalkosten
+    tagespreis = budget_eur / dauer_tage   [EUR/Tag]
 
-  Wobei:
-    personalkosten = dauer_tage × teamgroesse × stundensatz × STUNDEN_PRO_TAG
+  Vorteile gegenüber Overhead-Faktor-Ansatz:
+    - Keine Teamgrößen-Schätzung nötig → eliminiert größte Fehlerquelle
+    - Tagespreis ist project-type-abhängig und aus Features vorhersagbar
+    - Konsistent mit realer IT-Projektkalkulation (Tagessätze)
 
-  Der Overhead-Faktor > 1 erfasst alles jenseits reiner Personalkosten:
-    - Infrastruktur & Hardware
-    - Software-Lizenzen
-    - Projektmanagement-Overhead (15–30%)
-    - Gewinnmarge und Risikopuffer
-    - Externe Dienstleister
+  Pipeline:
+    budget_expected = dauer_predicted × tagespreis_p50
+    budget_range    = dauer_predicted × [tagespreis_p10, tagespreis_p90]
 
-  Typische Werte für DACH IT-Projekte:
-    overhead_faktor ≈ 0.8–5.0  (Median ca. 1.3–2.0)
+  Typische DACH IT-Tagespreise:
+    p25 ≈   700 €/Tag  (1 Berater / kleines Projekt)
+    p50 ≈ 1.500 €/Tag  (Kleines Team / mittleres Projekt)
+    p75 ≈ 6.000 €/Tag  (Größeres Team / Infrastrukturprojekt)
 
-  Training auf log(overhead_faktor) → log-normale Verteilungsannahme.
-
-Features (9):
-  Kategoriale (3): projekttyp, land, datenquelle
-  Numerische  (6): cpv_num, beschreibung_laenge, teamgroesse,
-                   stundensatz_eur_h, log_personalkosten, hat_deadline
+Features (57):
+  Kategoriale  (3): projekttyp, land, datenquelle
+  Numerische   (4): cpv_num, beschreibung_laenge, beschreibung_wortanzahl, log_dauer
+  SVD-Text    (50): TruncatedSVD aus TF-IDF auf 'beschreibung'
 
 Artefakte (unter models/):
-  overhead_model.pkl   – {modell, residual_quantile_p25, residual_quantile_p75, overhead_stats}
+  overhead_model.pkl    – {modell, tfidf, svd, residual-quantile, tagespreis_stats}
   overhead_encoders.pkl – OrdinalEncoder
 """
 
@@ -41,6 +40,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from sklearn.decomposition import TruncatedSVD
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OrdinalEncoder
@@ -51,17 +52,17 @@ logger = logging.getLogger(__name__)
 MODELL_DIR   = Path("models")
 MODELL_PKL   = MODELL_DIR / "overhead_model.pkl"
 ENCODER_PKL  = MODELL_DIR / "overhead_encoders.pkl"
-PLOT_PNG     = MODELL_DIR / "overhead_distribution.png"
+PLOT_PNG     = MODELL_DIR / "tagespreis_distribution.png"
 
-STUNDEN_PRO_TAG      = 8.0     # Produktive Stunden/Arbeitstag
-OVERHEAD_MIN         = 0.05    # Budget < 5% der Personalkosten → Datenfehler
-OVERHEAD_MAX         = 100.0   # Budget > 100× Personalkosten → Framework-Vertrag o.ä.
+STUNDEN_PRO_TAG   = 8.0     # Arbeitsstunden/Tag (für personalkosten-Reporting)
+TAGESPREIS_MIN    = 100     # 100 €/Tag: absolutes Minimum
+TAGESPREIS_MAX    = 200_000 # 200k €/Tag: Großrahmenprojekte
+N_SVD             = 50
 
-KATEGORIALE          = ["projekttyp", "land", "datenquelle"]
-NUMERISCHE           = ["cpv_num", "beschreibung_laenge", "teamgroesse",
-                        "stundensatz_eur_h", "log_personalkosten", "hat_deadline"]
+KATEGORIALE  = ["projekttyp", "land", "datenquelle"]
+NUMERISCHE   = ["cpv_num", "beschreibung_laenge", "beschreibung_wortanzahl", "log_dauer"]
 
-# Standardwerte Teamgröße je Projekttyp (kalibriert auf DACH-Marktdaten)
+# Teamgröße-Defaults (für Reporting/Personalkosten-Ausweis, NICHT für Kostenschätzung)
 PROJEKTTYP_TEAMGROESSE: dict[str, float] = {
     "Softwareentwicklung":           3.0,
     "Datenverarbeitung & Analytics": 2.5,
@@ -75,16 +76,10 @@ PROJEKTTYP_TEAMGROESSE: dict[str, float] = {
     "Sonstige IT":                   2.0,
 }
 
-
-# ---------------------------------------------------------------------------
-# Teamgröße-Extraktion
-# ---------------------------------------------------------------------------
-
-# Regex-Muster zur Extraktion expliziter Teamgrößen (Deutsch + Englisch)
 _TEAMGROESSE_MUSTER = [
     r"(\d+)\s*(?:vollzeit[-\s]?)?entwickler(?:innen)?",
     r"(\d+)\s*software[-\s]?(?:entwickler|ingenieure?)(?:innen)?",
-    r"(\d+)[-\s]?köpfig(?:es?|em|en)?\s+\w*team",   # 8-köpfiges Entwicklerteam
+    r"(\d+)[-\s]?köpfig(?:es?|em|en)?\s+\w*team",
     r"(\d+)[-\s]?köpfig(?:es?|em|en)?\s+team",
     r"team\s+(?:aus\s+|von\s+)?(\d+)",
     r"(\d+)\s*(?:fte|vollzeitstellen?|vollzeitäquivalente?)",
@@ -97,11 +92,7 @@ _MUSTER_KOMPILIERT = [re.compile(p, re.IGNORECASE) for p in _TEAMGROESSE_MUSTER]
 
 
 def extract_teamgroesse(beschreibung: str, projekttyp: str = "Softwareentwicklung") -> float:
-    """
-    Schätzt Teamgröße aus Beschreibungstext (Regex) oder Projekttyp-Heuristik.
-
-    Rückgabe: Durchschnittliche Anzahl Vollzeit-Äquivalente (FTE), mindestens 1.0.
-    """
+    """Schätzt Teamgröße via Regex oder Projekttyp-Heuristik. Nur für Reporting."""
     for muster in _MUSTER_KOMPILIERT:
         treffer = muster.search(beschreibung or "")
         if treffer:
@@ -111,16 +102,8 @@ def extract_teamgroesse(beschreibung: str, projekttyp: str = "Softwareentwicklun
     return PROJEKTTYP_TEAMGROESSE.get(projekttyp, 2.0)
 
 
-# ---------------------------------------------------------------------------
-# Personalkosten-Berechnung
-# ---------------------------------------------------------------------------
-
-def berechne_personalkosten(
-    dauer_tage: float,
-    teamgroesse: float,
-    stundensatz_eur_h: float,
-) -> float:
-    """personalkosten = dauer_tage × teamgroesse × stundensatz × STUNDEN_PRO_TAG"""
+def berechne_personalkosten(dauer_tage: float, teamgroesse: float, stundensatz_eur_h: float) -> float:
+    """Reine Personalkosten (ohne Overhead). Nur für Reporting-Zwecke."""
     return dauer_tage * teamgroesse * stundensatz_eur_h * STUNDEN_PRO_TAG
 
 
@@ -128,54 +111,27 @@ def berechne_personalkosten(
 # Feature Engineering
 # ---------------------------------------------------------------------------
 
-def _feature_engineering(df: pd.DataFrame, stundensatz_lookup: dict | None = None) -> pd.DataFrame:
-    """
-    Reichert DataFrame mit Overhead-spezifischen Features an.
-    stundensatz_lookup: {land: stundensatz_eur_h}; None → lädt aus fetch_salary_data
-    """
+def _feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-
     if "datenquelle" not in df.columns:
         df["datenquelle"] = "ted"
-
-    df["beschreibung_laenge"] = df["beschreibung"].str.len().fillna(0).astype("float32")
-    df["hat_deadline"]        = df["dauer_tage"].notna().astype("float32")
+    df["beschreibung_laenge"]     = df["beschreibung"].str.len().fillna(0).astype("float32")
+    df["beschreibung_wortanzahl"] = df["beschreibung"].str.split().str.len().fillna(0).astype("float32")
     df["cpv_num"] = pd.to_numeric(df["cpv_code"], errors="coerce").fillna(72_000_000).astype("float32")
-
-    # Teamgröße
-    projekttyp_col = df["projekttyp"].astype(str) if "projekttyp" in df.columns else pd.Series(["Softwareentwicklung"] * len(df))
-    df["teamgroesse"] = [
-        extract_teamgroesse(str(b), str(p))
-        for b, p in zip(df["beschreibung"].fillna(""), projekttyp_col)
-    ]
-    df["teamgroesse"] = df["teamgroesse"].astype("float32")
-
-    # Stundensatz je Land
-    if stundensatz_lookup:
-        df["stundensatz_eur_h"] = df["land"].astype(str).map(stundensatz_lookup).fillna(47.5).astype("float32")
-    else:
-        # Lazy-Import vermeidet zirkuläre Abhängigkeiten
-        try:
-            from estimateiq.data.fetch_salary_data import get_stundensatz as _get_stundensatz
-            df["stundensatz_eur_h"] = df["land"].astype(str).apply(
-                lambda l: _get_stundensatz(l, "all")["stundensatz_median"]
-            ).astype("float32")
-        except Exception:
-            df["stundensatz_eur_h"] = 47.5
-
-    # Log-Personalkosten als Feature (hilft Modell, Korrekturrichtung zu lernen)
-    dauer = pd.to_numeric(df["dauer_tage"], errors="coerce").fillna(180.0).clip(lower=1.0)
-    pk    = berechne_personalkosten(dauer, df["teamgroesse"], df["stundensatz_eur_h"])
-    df["log_personalkosten"] = np.log1p(pk).astype("float32")
-
+    # log(dauer_tage) als Feature: längere Projekte haben oft andere Tagespreisstruktur
+    dauer = pd.to_numeric(df.get("dauer_tage", pd.Series([180] * len(df))), errors="coerce").fillna(180.0).clip(lower=1.0)
+    df["log_dauer"] = np.log1p(dauer).astype("float32")
     return df
 
 
 def _erstelle_feature_matrix(
     df: pd.DataFrame,
     encoder: OrdinalEncoder | None = None,
-) -> tuple[np.ndarray, OrdinalEncoder]:
+    tfidf: TfidfVectorizer | None = None,
+    svd: TruncatedSVD | None = None,
+) -> tuple[np.ndarray, OrdinalEncoder, TfidfVectorizer, TruncatedSVD]:
     fit = encoder is None
+
     if fit:
         encoder = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1, dtype=np.float32)
         kat = encoder.fit_transform(df[KATEGORIALE].astype(str).fillna("unbekannt"))
@@ -183,7 +139,20 @@ def _erstelle_feature_matrix(
         kat = encoder.transform(df[KATEGORIALE].astype(str).fillna("unbekannt"))
 
     num = df[NUMERISCHE].apply(pd.to_numeric, errors="coerce").fillna(0.0).values.astype(np.float32)
-    return np.hstack([kat, num]), encoder
+
+    texte = df["beschreibung"].fillna("").tolist()
+    if fit:
+        tfidf = TfidfVectorizer(max_features=15_000, min_df=2, sublinear_tf=True, ngram_range=(1, 2))
+        mat   = tfidf.fit_transform(texte)
+        n_k   = min(N_SVD, mat.shape[1] - 1, mat.shape[0] - 1)
+        svd   = TruncatedSVD(n_components=n_k, random_state=42)
+        txt   = svd.fit_transform(mat).astype(np.float32)
+        logger.info("[Tagespreis] TF-IDF Vokabular: %d | SVD: %d Komp. (%.1f%% Textvarianz)",
+                    len(tfidf.vocabulary_), n_k, svd.explained_variance_ratio_.sum() * 100)
+    else:
+        txt = svd.transform(tfidf.transform(texte)).astype(np.float32)
+
+    return np.hstack([kat, num, txt]), encoder, tfidf, svd
 
 
 # ---------------------------------------------------------------------------
@@ -192,12 +161,13 @@ def _erstelle_feature_matrix(
 
 def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
     """
-    Trainiert das Overhead-Modell auf Projekten mit Budget UND Laufzeit.
+    Trainiert das Tagespreis-Modell.
 
-    Overhead-Faktor = budget_eur / personalkosten
-    Ziel-Variable   = log(overhead_faktor)
+    Zielgröße: log(budget_eur / dauer_tage) = log(tagespreis in EUR/Tag)
+    Vorteil:   Keine Teamgrößen-Schätzung nötig → eliminiert größte Fehlerquelle
+               des alten Overhead-Ansatzes.
     """
-    logger.info("[Overhead] Starte Training (Projekten mit Budget + Laufzeit)...")
+    logger.info("[Tagespreis] Starte Training (Ziel: log(budget/dauer_tage))...")
 
     df = _feature_engineering(df)
     maske = (
@@ -206,37 +176,32 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
         & (pd.to_numeric(df["dauer_tage"], errors="coerce") >= 7)
     )
     df_sauber = df[maske].reset_index(drop=True)
-    logger.info("[Overhead] %d / %d Projekte mit Budget + Laufzeit.", len(df_sauber), len(df))
+    logger.info("[Tagespreis] %d / %d Projekte mit Budget + Laufzeit.", len(df_sauber), len(df))
 
     if len(df_sauber) < 30:
         raise ValueError(f"Zu wenig Trainingsdaten: {len(df_sauber)} (Minimum: 30).")
 
-    # Overhead-Faktor berechnen
-    dauer = pd.to_numeric(df_sauber["dauer_tage"], errors="coerce").astype(float)
-    pk    = berechne_personalkosten(dauer, df_sauber["teamgroesse"], df_sauber["stundensatz_eur_h"])
-    pk    = pk.clip(lower=1.0)
-    of    = df_sauber["budget_eur"].astype(float) / pk
-
-    # Ausreißer-Filter
-    maske_valid = (of >= OVERHEAD_MIN) & (of <= OVERHEAD_MAX) & of.notna()
-    gefiltert   = (~maske_valid).sum()
-    if gefiltert:
-        logger.info("[Overhead] %d Datensätze mit Overhead-Faktor außerhalb [%.2f, %.0f] gefiltert.",
-                    gefiltert, OVERHEAD_MIN, OVERHEAD_MAX)
-
-    df_sauber = df_sauber[maske_valid].reset_index(drop=True)
-    of        = of[maske_valid].reset_index(drop=True)
-
-    _plot_overhead_verteilung(of)
-    logger.info(
-        "[Overhead] Verteilung Overhead-Faktor:\n"
-        "  Median:  %6.2f  |  p25: %5.2f  |  p75: %5.2f\n"
-        "  Minimum: %6.2f  |  Maximum: %5.1f  |  n=%d",
-        of.median(), of.quantile(0.25), of.quantile(0.75),
-        of.min(), of.max(), len(of),
+    dauer = pd.to_numeric(df_sauber["dauer_tage"], errors="coerce").clip(lower=1.0)
+    tagespreis = (df_sauber["budget_eur"].astype(float) / dauer).clip(
+        lower=TAGESPREIS_MIN, upper=TAGESPREIS_MAX
     )
 
-    y_log = np.log(of.values.astype(np.float64))
+    # Filtere Ausreißer (Clipping bedeutet: leicht verschobene Werte bleiben)
+    maske_valid = tagespreis.between(TAGESPREIS_MIN, TAGESPREIS_MAX)
+    gefiltert   = (~maske_valid).sum()
+    if gefiltert:
+        logger.info("[Tagespreis] %d Datensätze nach Tagespreis-Clipping angepasst.", gefiltert)
+
+    _plot_tagespreis_verteilung(tagespreis)
+    logger.info(
+        "[Tagespreis] Verteilung (EUR/Tag):\n"
+        "  Median: %8,.0f  |  p25: %8,.0f  |  p75: %8,.0f\n"
+        "  Min:    %8,.0f  |  Max: %8,.0f  |  n=%d",
+        tagespreis.median(), tagespreis.quantile(0.25), tagespreis.quantile(0.75),
+        tagespreis.min(), tagespreis.max(), len(tagespreis),
+    )
+
+    y_log = np.log(tagespreis.values.astype(np.float64))
 
     quartile = pd.qcut(pd.Series(y_log), q=4, labels=False, duplicates="drop").fillna(0).values
     idx = np.arange(len(df_sauber))
@@ -245,17 +210,18 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
     df_train, df_test = df_sauber.iloc[idx_train].reset_index(drop=True), df_sauber.iloc[idx_test].reset_index(drop=True)
     y_train, y_test   = y_log[idx_train], y_log[idx_test]
 
-    X_train, encoder = _erstelle_feature_matrix(df_train)
-    X_test, _        = _erstelle_feature_matrix(df_test, encoder=encoder)
-    logger.info("[Overhead] Split: %d Train / %d Test, %d Features.", len(X_train), len(X_test), X_train.shape[1])
+    X_train, encoder, tfidf, svd = _erstelle_feature_matrix(df_train)
+    X_test,  _,       _,    _   = _erstelle_feature_matrix(df_test, encoder=encoder, tfidf=tfidf, svd=svd)
+    logger.info("[Tagespreis] Split: %d Train / %d Test, %d Features.",
+                len(X_train), len(X_test), X_train.shape[1])
 
     modell = XGBRegressor(
-        n_estimators=500,
+        n_estimators=600,
         learning_rate=0.02,
         max_depth=4,
         min_child_weight=4,
         subsample=0.8,
-        colsample_bytree=0.7,
+        colsample_bytree=0.6,
         reg_alpha=0.1,
         reg_lambda=1.5,
         random_state=42,
@@ -266,60 +232,70 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
     modell.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
 
     y_pred_log = modell.predict(X_test).astype(np.float64)
-    residuals  = y_test - y_pred_log   # Residuen im Log-Raum (test set)
+    residuals  = y_test - y_pred_log   # Test-Set Residuen im log-Raum
 
-    rmse_log = float(np.sqrt(mean_squared_error(y_test, y_pred_log)))
-    r2       = float(r2_score(y_test, y_pred_log))
-    mae_log  = float(np.mean(np.abs(residuals)))
+    rmse_log   = float(np.sqrt(mean_squared_error(y_test, y_pred_log)))
+    r2_log     = float(r2_score(y_test, y_pred_log))
+    mae_log    = float(np.mean(np.abs(residuals)))
+    # Rückrechnung in €/Tag für intuitive Fehlermetrik
+    y_pred_eur = np.exp(y_pred_log)
+    y_true_eur = np.exp(y_test)
+    mdape      = float(np.median(np.abs(y_true_eur - y_pred_eur) / (y_true_eur + 1)) * 100)
 
-    # Residual-Quantile → dienen später als Konfidenzintervall
-    rq_p10 = float(np.percentile(residuals, 10))
-    rq_p25 = float(np.percentile(residuals, 25))
-    rq_p75 = float(np.percentile(residuals, 75))
-    rq_p90 = float(np.percentile(residuals, 90))
+    # Residual-Quantile → Konfidenzintervalle bei predict()
+    rq = {
+        "p10": float(np.percentile(residuals, 10)),
+        "p25": float(np.percentile(residuals, 25)),
+        "p75": float(np.percentile(residuals, 75)),
+        "p90": float(np.percentile(residuals, 90)),
+    }
 
     logger.info(
-        "[Overhead] Ergebnis:\n"
+        "[Tagespreis] Ergebnis:\n"
         "  RMSE (log):    %8.4f\n"
         "  MAE  (log):    %8.4f\n"
         "  R²   (log):    %8.4f\n"
-        "  Residual-Quantile (log-Raum): p10=%+.3f  p25=%+.3f  p75=%+.3f  p90=%+.3f\n"
-        "  Entspricht Multiplikatoren:   p10=%.2f×  p25=%.2f×  p75=%.2f×  p90=%.2f×\n"
+        "  MdAPE (€/Tag): %7.1f%%\n"
+        "  Residual-CI (log): p10=%+.3f  p25=%+.3f  p75=%+.3f  p90=%+.3f\n"
+        "  = Tagespreis-Multiplikatoren: p10=%.2f×  p25=%.2f×  p75=%.2f×  p90=%.2f×\n"
         "  Best iteration:%8d",
-        rmse_log, mae_log, r2,
-        rq_p10, rq_p25, rq_p75, rq_p90,
-        np.exp(rq_p10), np.exp(rq_p25), np.exp(rq_p75), np.exp(rq_p90),
+        rmse_log, mae_log, r2_log, mdape,
+        rq["p10"], rq["p25"], rq["p75"], rq["p90"],
+        np.exp(rq["p10"]), np.exp(rq["p25"]), np.exp(rq["p75"]), np.exp(rq["p90"]),
         modell.best_iteration,
     )
 
     MODELL_DIR.mkdir(parents=True, exist_ok=True)
     artefakt = {
-        "modell":     modell,
-        "rq_p10":     rq_p10,
-        "rq_p25":     rq_p25,
-        "rq_p75":     rq_p75,
-        "rq_p90":     rq_p90,
-        "overhead_stats": {
-            "median": float(of.median()),
-            "p25":    float(of.quantile(0.25)),
-            "p75":    float(of.quantile(0.75)),
+        "modell":    modell,
+        "tfidf":     tfidf,
+        "svd":       svd,
+        "rq_p10":    rq["p10"],
+        "rq_p25":    rq["p25"],
+        "rq_p75":    rq["p75"],
+        "rq_p90":    rq["p90"],
+        "tagespreis_stats": {
+            "median": float(tagespreis.median()),
+            "p25":    float(tagespreis.quantile(0.25)),
+            "p75":    float(tagespreis.quantile(0.75)),
         },
     }
     with MODELL_PKL.open("wb") as f:
         pickle.dump(artefakt, f)
     with ENCODER_PKL.open("wb") as f:
         pickle.dump(encoder, f)
-    logger.info("[Overhead] Gespeichert: %s | %s", MODELL_PKL, ENCODER_PKL)
+    logger.info("[Tagespreis] Gespeichert: %s | %s", MODELL_PKL, ENCODER_PKL)
 
     return {
         "rmse_log":       rmse_log,
         "mae_log":        mae_log,
-        "r2_log":         r2,
-        "rq_p25":         rq_p25,
-        "rq_p75":         rq_p75,
-        "overhead_median": float(of.median()),
-        "overhead_p25":   float(of.quantile(0.25)),
-        "overhead_p75":   float(of.quantile(0.75)),
+        "r2_log":         r2_log,
+        "mdape":          mdape,
+        "rq_p25":         rq["p25"],
+        "rq_p75":         rq["p75"],
+        "overhead_median": float(tagespreis.median()),
+        "overhead_p25":   float(tagespreis.quantile(0.25)),
+        "overhead_p75":   float(tagespreis.quantile(0.75)),
         "n_train":        len(X_train),
         "n_test":         len(X_test),
         "best_iteration": modell.best_iteration,
@@ -332,58 +308,61 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
 
 def predict(df: pd.DataFrame) -> list[dict]:
     """
-    Gibt Overhead-Faktor als Verteilung zurück.
+    Gibt Tagespreis-Verteilung zurück (EUR/Tag).
 
-    Rückgabe: Liste von dicts mit:
-      {"p25": float, "p50": float, "p75": float, "p10": float, "p90": float}
+    Rückgabe: Liste von dicts mit p10, p25, p50, p75, p90 in EUR/Tag.
+
+    Beispiel:
+      [{"p10": 320, "p25": 690, "p50": 1480, "p75": 5200, "p90": 14800}]
     """
     modell, artefakt, encoder = _lade_modell()
 
     df = _feature_engineering(df)
-    X, _ = _erstelle_feature_matrix(df, encoder=encoder)
+    X, _, _, _ = _erstelle_feature_matrix(df, encoder=encoder,
+                                           tfidf=artefakt["tfidf"], svd=artefakt["svd"])
     pred_log = modell.predict(X).astype(np.float64)
 
-    ergebnisse = []
-    for pl in pred_log:
-        ergebnisse.append({
+    return [
+        {
             "p10": float(np.exp(pl + artefakt["rq_p10"])),
             "p25": float(np.exp(pl + artefakt["rq_p25"])),
             "p50": float(np.exp(pl)),
             "p75": float(np.exp(pl + artefakt["rq_p75"])),
             "p90": float(np.exp(pl + artefakt["rq_p90"])),
-        })
-    return ergebnisse
+        }
+        for pl in pred_log
+    ]
 
 
 # ---------------------------------------------------------------------------
 # Diagnose-Plot
 # ---------------------------------------------------------------------------
 
-def _plot_overhead_verteilung(of: pd.Series) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+def _plot_tagespreis_verteilung(tp: pd.Series) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
 
-    log_of = np.log(of[of > 0])
-    axes[0].hist(log_of, bins=40, color="#f97316", alpha=0.75, edgecolor="white", linewidth=0.4)
-    axes[0].set_xlabel("log(Overhead-Faktor)")
+    log_tp = np.log(tp[tp > 0])
+    axes[0].hist(log_tp, bins=40, color="#f97316", alpha=0.75, edgecolor="white", linewidth=0.4)
+    axes[0].set_xlabel("log(Tagespreis, EUR/Tag)")
     axes[0].set_ylabel("Anzahl Projekte")
-    axes[0].set_title("Overhead-Verteilung (log-Skala)", fontweight="bold")
-    for pct_val, label, farbe in [(0.25, "p25", "#2563eb"), (0.50, "Median", "#ef4444"), (0.75, "p75", "#8b5cf6")]:
-        v = np.log(of.quantile(pct_val))
-        axes[0].axvline(v, color=farbe, linestyle="--", linewidth=1.5, label=f"{label}: {of.quantile(pct_val):.2f}×")
+    axes[0].set_title("Tagespreis-Verteilung (log-Skala)", fontweight="bold")
+    for pv, lbl, farbe in [(0.25, "p25", "#2563eb"), (0.50, "Median", "#ef4444"), (0.75, "p75", "#8b5cf6")]:
+        v = np.log(tp.quantile(pv))
+        axes[0].axvline(v, color=farbe, linestyle="--", linewidth=1.5,
+                        label=f"{lbl}: {tp.quantile(pv):,.0f} €/Tag")
     axes[0].legend(fontsize=9)
 
-    axes[1].hist(of.clip(upper=10), bins=40, color="#10b981", alpha=0.75, edgecolor="white", linewidth=0.4)
-    axes[1].set_xlabel("Overhead-Faktor (bis 10×)")
-    axes[1].set_title("Overhead-Verteilung (linear, bis 10×)", fontweight="bold")
-    axes[1].axvline(1.0, color="#ef4444", linestyle="-", linewidth=2.0, label="Overhead-Faktor = 1")
-    axes[1].legend(fontsize=9)
+    tp_clip = tp.clip(upper=tp.quantile(0.95))
+    axes[1].hist(tp_clip / 1000, bins=40, color="#10b981", alpha=0.75, edgecolor="white", linewidth=0.4)
+    axes[1].set_xlabel("Tagespreis (T€/Tag, bis p95)")
+    axes[1].set_title("Tagespreis-Verteilung (linear, bis p95)", fontweight="bold")
 
-    plt.suptitle("Overhead-Faktor = Budget / Personalkosten", fontsize=12, fontweight="bold")
+    plt.suptitle("Tagespreis = Budget / Laufzeit (EUR/Tag)", fontsize=12, fontweight="bold")
     plt.tight_layout()
     MODELL_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(PLOT_PNG, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    logger.info("[Overhead] Verteilungs-Plot: %s", PLOT_PNG)
+    logger.info("[Tagespreis] Verteilungs-Plot: %s", PLOT_PNG)
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +372,7 @@ def _plot_overhead_verteilung(of: pd.Series) -> None:
 def _lade_modell():
     if not MODELL_PKL.exists():
         raise FileNotFoundError(
-            f"Kein trainiertes Overhead-Modell unter {MODELL_PKL}. "
+            f"Kein trainiertes Tagespreis-Modell unter {MODELL_PKL}. "
             "Bitte zuerst: python train.py --only overhead"
         )
     with MODELL_PKL.open("rb") as f:
