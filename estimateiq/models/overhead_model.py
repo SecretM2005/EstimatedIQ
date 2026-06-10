@@ -215,11 +215,13 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
             df_sauber = df_sauber[hat_echte_dauer].reset_index(drop=True)
             dauer_arr = pd.to_numeric(df_sauber["dauer_tage"], errors="coerce").values.astype(np.float64)
 
-    dauer = pd.Series(dauer_arr).clip(lower=1.0)
-    tagespreis = (df_sauber["budget_eur"].astype(float).values / dauer.values).clip(
-        lower=TAGESPREIS_MIN, upper=TAGESPREIS_MAX
+    dauer = np.clip(dauer_arr, 1.0, None)
+    tagespreis = pd.Series(
+        np.clip(
+            df_sauber["budget_eur"].astype(float).values / dauer,
+            TAGESPREIS_MIN, TAGESPREIS_MAX,
+        )
     )
-    tagespreis = pd.Series(tagespreis)
 
     # Filtere Ausreißer (Clipping bedeutet: leicht verschobene Werte bleiben)
     maske_valid = tagespreis.between(TAGESPREIS_MIN, TAGESPREIS_MAX)
