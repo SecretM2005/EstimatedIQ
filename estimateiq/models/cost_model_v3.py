@@ -318,7 +318,11 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
 
     # Stratifizierter Split auf Index-Ebene
     # (Split zuerst, dann Target-Encoding – verhindert Leakage)
-    quartile = pd.qcut(y_log, q=4, labels=False, duplicates="drop").fillna(0)
+    quartile = (
+        pd.qcut(pd.Series(y_log), q=4, labels=False, duplicates="drop")
+        .fillna(0)
+        .values
+    )
     idx_alle = np.arange(n_sauber)
     idx_train, idx_test = train_test_split(
         idx_alle, test_size=test_anteil, random_state=42, stratify=quartile,
