@@ -229,16 +229,13 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
 # Schritt 3 – Vorhersage
 # ---------------------------------------------------------------------------
 
-def predict(df: pd.DataFrame) -> np.ndarray:
+def predict(df: pd.DataFrame, **_kwargs) -> np.ndarray:
     """
     Sagt Auftragswerte in EUR voraus.
 
     Args:
-        df: DataFrame mit denselben Spalten wie aus preprocess_pipeline()
-            (mindestens: land, projekttyp, dauer_tage, beschreibung)
-
-    Returns:
-        numpy-Array mit vorhergesagten Budgets in EUR.
+        df: DataFrame (mindestens: land, projekttyp, dauer_tage, beschreibung)
+        **_kwargs: Werden ignoriert (Kompatibilität mit Cost Model v2 Signatur)
     """
     modell, encoder = _lade_modell()
     df = _feature_engineering(df)

@@ -24,6 +24,7 @@ import logging
 import math
 import re
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -36,6 +37,8 @@ logger = logging.getLogger(__name__)
 MODEL_NAME  = "bert-base-german-cased"
 MAX_LENGTH  = 512
 BATCH_SIZE  = 16
+
+EMBEDDINGS_CACHE_PFAD = Path("data/processed/bert_embeddings.npy")
 
 # ---------------------------------------------------------------------------
 # Konfiguration – Anker-Texte für Zero-Shot-Klassifikation
@@ -266,6 +269,49 @@ def _einbetten(texte: list[str]) -> np.ndarray:
     return np.vstack(alle_embeddings).astype(np.float32)
 
 
+def berechne_embeddings_gecacht(
+    texte: list[str],
+    cache_pfad: Path | None = EMBEDDINGS_CACHE_PFAD,
+) -> np.ndarray:
+    """
+    Berechnet Mean-Pooling-Embeddings mit Disk-Cache.
+
+    Wenn cache_pfad existiert und die gespeicherte Zeilenzahl mit len(texte)
+    übereinstimmt, wird der Cache direkt geladen (spart 60–90 Minuten CPU-Zeit).
+    Sonst werden Embeddings neu berechnet und gespeichert.
+
+    Args:
+        texte:      Liste der Beschreibungstexte
+        cache_pfad: Pfad zur .npy-Datei; None = kein Cache
+
+    Returns:
+        Float32-Array der Form (len(texte), 768)
+    """
+    if cache_pfad and cache_pfad.exists():
+        try:
+            gespeichert = np.load(str(cache_pfad))
+            if gespeichert.shape[0] == len(texte):
+                logger.info("[BERT] Embeddings aus Cache geladen: %s (%d × %d)",
+                            cache_pfad, *gespeichert.shape)
+                return gespeichert
+            logger.warning(
+                "[BERT] Cache-Größe passt nicht (%d Zeilen gespeichert, %d erwartet) – berechne neu.",
+                gespeichert.shape[0], len(texte),
+            )
+        except Exception as exc:
+            logger.warning("[BERT] Cache nicht lesbar: %s – berechne neu.", exc)
+
+    emb = _einbetten(texte)
+
+    if cache_pfad:
+        cache_pfad.parent.mkdir(parents=True, exist_ok=True)
+        np.save(str(cache_pfad), emb)
+        logger.info("[BERT] Embeddings in Cache gespeichert: %s (%d × %d)",
+                    cache_pfad, *emb.shape)
+
+    return emb
+
+
 # ---------------------------------------------------------------------------
 # Anker-Embeddings (einmalig nach Modell-Load berechnen)
 # ---------------------------------------------------------------------------
@@ -456,16 +502,20 @@ def _schaetze_schnittstellen(text: str) -> int:
 # Haupt-API: DataFrame anreichern
 # ---------------------------------------------------------------------------
 
-def anreichere_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+def anreichere_dataframe(
+    df: pd.DataFrame,
+    cache_pfad: Path | None = EMBEDDINGS_CACHE_PFAD,
+) -> pd.DataFrame:
     """
     Fügt vier BERT-basierte Feature-Spalten zum DataFrame hinzu:
       projekttyp_bert, technologien, komplexitaet, schnittstellen_anzahl
 
     Args:
-        df: DataFrame mit Spalte "beschreibung" (aus preprocess.py)
+        df:          DataFrame mit Spalte "beschreibung" (aus preprocess.py)
+        cache_pfad:  Pfad zum Embedding-Cache (.npy); None = kein Cache
 
     Returns:
-        Erweiterter DataFrame (neue Spalten werden in-place angefügt).
+        Erweiterter DataFrame (Kopie mit neuen Spalten).
     """
     if "beschreibung" not in df.columns:
         raise ValueError("DataFrame muss eine Spalte 'beschreibung' enthalten.")
@@ -474,8 +524,8 @@ def anreichere_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     n     = len(texte)
     logger.info("[BertExtractor] Verarbeite %d Texte ...", n)
 
-    # --- Embeddings einmal berechnen (für projekttyp + komplexitaet) ---
-    embeddings = _einbetten(texte)
+    # --- Embeddings einmal berechnen – mit Disk-Cache ---
+    embeddings = berechne_embeddings_gecacht(texte, cache_pfad=cache_pfad)
 
     # --- Feature 1: Projekttyp ---
     logger.info("[BertExtractor] Klassifiziere Projekttypen ...")
@@ -509,17 +559,26 @@ def anreichere_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 def extrahiere_features(beschreibung: str) -> dict:
     """
-    Extrahiert alle vier Features für einen einzelnen Text.
+    Extrahiert alle Features für einen einzelnen Text.
     Gibt ein Dict zurück (geeignet für API-Antworten).
+    Enthält zusätzlich 'embeddings' (1×768 float32-Array) für Cost Model v2.
     """
-    df_einzel = pd.DataFrame([{"beschreibung": beschreibung}])
-    df_result = anreichere_dataframe(df_einzel)
-    zeile     = df_result.iloc[0]
+    texte = [beschreibung]
+    # Kein Disk-Cache für einzelne API-Requests
+    embeddings = _einbetten(texte)
+
+    anker = _hole_anker_embeddings()
+    projekttypen = _klassifiziere_projekttyp(embeddings)
+    technologien = [_erkenne_technologien(beschreibung)]
+    schnittstellen = [_schaetze_schnittstellen(beschreibung)]
+    komplexitaet = _berechne_komplexitaet(texte, technologien, schnittstellen, embeddings)
+
     return {
-        "projekttyp_bert":       zeile["projekttyp_bert"],
-        "technologien":          zeile["technologien"],
-        "komplexitaet":          int(zeile["komplexitaet"]),
-        "schnittstellen_anzahl": int(zeile["schnittstellen_anzahl"]),
+        "projekttyp_bert":       projekttypen[0],
+        "technologien":          technologien[0],
+        "komplexitaet":          int(komplexitaet[0]),
+        "schnittstellen_anzahl": int(schnittstellen[0]),
+        "embeddings":            embeddings,  # (1, 768) – für Cost Model v2
     }
 
 

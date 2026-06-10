@@ -183,14 +183,13 @@ async def estimate(req: EstimateRequest):
         # BERT-Features aus Beschreibung extrahieren
         bert = extrahiere_features(req.description)
 
-        # DataFrame für v2 um BERT-Features anreichern (v1 ignoriert diese Spalten)
-        df["projekttyp_bert"]       = bert["projekttyp_bert"]
+        # DataFrame um Scalar-BERT-Features anreichern (v1 ignoriert diese Spalten)
         df["komplexitaet"]          = bert["komplexitaet"]
         df["schnittstellen_anzahl"] = bert["schnittstellen_anzahl"]
         df["technologien"]          = [bert["technologien"]]
 
-        # Kostenschätzung
-        cost_predictions = predict_cost(df)
+        # Kostenschätzung: v2 bekommt Embedding-Vektor, v1 ignoriert ihn
+        cost_predictions = predict_cost(df, embeddings=bert.get("embeddings"))
         estimated_cost = float(cost_predictions[0])
 
         # Risikoanalyse

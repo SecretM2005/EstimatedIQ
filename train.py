@@ -3,19 +3,20 @@ EstimateIQ – vollständiger Trainings-Workflow.
 
 Ablauf:
   1. Vorverarbeitete Daten laden (data/processed/notices.parquet)
-  2. BERT-Features extrahieren (bert_extractor.anreichere_dataframe)
-  3. Cost Model v1 trainieren  (nur numerische Features, schnell)
-  4. Cost Model v2 trainieren  (+ BERT-Features)
-  5. Risk Model trainieren
-  6. Alle Metriken zusammenfassen
+  2. BERT-Embeddings berechnen (mit Disk-Cache – wird nur einmal berechnet)
+  3. BERT-Scalar-Features ableiten (projekttyp_bert, komplexitaet, ...)
+  4. Cost Model v1 trainieren  (4 numerische Features, schnell)
+  5. Cost Model v2 trainieren  (+ 50 PCA-Komponenten aus BERT-Embeddings)
+  6. Risk Model trainieren
+  7. Alle Metriken zusammenfassen
 
 Verwendung:
   python train.py [--skip-bert] [--only MODEL]
 
 Optionen:
-  --skip-bert   Überspringt BERT-Anreicherung; trainiert nur v1 + Risk
+  --skip-bert   Überspringt BERT; trainiert nur v1 + Risk (kein Cache nötig)
   --only v1     Trainiert nur Cost Model v1
-  --only v2     Trainiert nur Cost Model v2 (setzt BERT-Anreicherung voraus)
+  --only v2     Trainiert nur Cost Model v2 (nutzt Embedding-Cache falls vorhanden)
   --only risk   Trainiert nur das Risk Model
 """
 
@@ -25,6 +26,7 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 logging.basicConfig(
@@ -47,15 +49,28 @@ def lade_daten() -> pd.DataFrame:
     return df
 
 
-def bert_anreichern(df: pd.DataFrame) -> pd.DataFrame:
-    """BERT-Features zu allen Zeilen hinzufügen."""
-    from estimateiq.models.bert_extractor import anreichere_dataframe
-    logger.info("Starte BERT-Anreicherung (%d Texte)...", len(df))
+def bert_anreichern(df: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
+    """
+    BERT-Embeddings berechnen (mit Cache) und Scalar-Features ableiten.
+
+    Returns:
+        (df_angereichert, embeddings_matrix)
+    """
+    from estimateiq.models.bert_extractor import anreichere_dataframe, berechne_embeddings_gecacht
+
+    texte = df["beschreibung"].fillna("").tolist()
+    logger.info("Lade/Berechne BERT-Embeddings für %d Texte...", len(texte))
     t0 = time.time()
-    df = anreichere_dataframe(df)
-    dauer = time.time() - t0
-    logger.info("BERT-Anreicherung abgeschlossen in %.0f Sekunden.", dauer)
-    return df
+    embeddings = berechne_embeddings_gecacht(texte)
+    dauer_emb = time.time() - t0
+    logger.info("Embeddings bereit in %.0f Sekunden.", dauer_emb)
+
+    logger.info("Leite BERT-Scalar-Features ab...")
+    t1 = time.time()
+    df_angereichert = anreichere_dataframe(df)
+    logger.info("Scalar-Features abgeleitet in %.0f Sekunden.", time.time() - t1)
+
+    return df_angereichert, embeddings
 
 
 def trainiere_v1(df: pd.DataFrame) -> dict:
@@ -65,11 +80,12 @@ def trainiere_v1(df: pd.DataFrame) -> dict:
     return train(df)
 
 
-def trainiere_v2(df: pd.DataFrame) -> dict:
+def trainiere_v2(df: pd.DataFrame, embeddings: np.ndarray) -> dict:
     from estimateiq.models.cost_model_v2 import train
     logger.info("─" * 50)
-    logger.info("Trainiere Cost Model v2 (BERT-Features)...")
-    return train(df)
+    logger.info("Trainiere Cost Model v2 (PCA-Embeddings + numerisch, %d Features gesamt)...",
+                50 + 2 + 6)
+    return train(df, embeddings=embeddings)
 
 
 def trainiere_risk(df: pd.DataFrame) -> dict:
@@ -80,14 +96,14 @@ def trainiere_risk(df: pd.DataFrame) -> dict:
 
 
 def drucke_zusammenfassung(ergebnisse: dict) -> None:
-    trenner = "═" * 60
+    trenner = "═" * 62
     print(f"\n{trenner}")
     print("  EstimateIQ – Trainings-Zusammenfassung")
     print(trenner)
 
     if "v1" in ergebnisse:
         m = ergebnisse["v1"]
-        print(f"\n  Cost Model v1 (numerisch)")
+        print(f"\n  Cost Model v1 (numerisch, 4 Features)")
         print(f"    RMSE (EUR):    {m['rmse_eur']:>14,.0f} €")
         print(f"    R²:            {m['r2']:>14.4f}")
         print(f"    RMSE (log):    {m['rmse_log']:>14.4f}")
@@ -95,14 +111,16 @@ def drucke_zusammenfassung(ergebnisse: dict) -> None:
 
     if "v2" in ergebnisse:
         m = ergebnisse["v2"]
-        print(f"\n  Cost Model v2 (+ BERT-Features)")
+        n_pca = m.get("n_pca_features", "?")
+        n_feat = m.get("n_features", "?")
+        print(f"\n  Cost Model v2 (PCA-Embeddings, {n_feat} Features, {n_pca} PCA-Komp.)")
         print(f"    RMSE (EUR):    {m['rmse_eur']:>14,.0f} €")
         print(f"    R²:            {m['r2']:>14.4f}")
         print(f"    RMSE (log):    {m['rmse_log']:>14.4f}")
         print(f"    Train/Test:    {m['n_train']:,} / {m['n_test']:,}")
         if "v1" in ergebnisse:
-            verbesserung = ergebnisse["v2"]["r2"] - ergebnisse["v1"]["r2"]
-            print(f"    R²-Verbesserung ggü. v1: {verbesserung:+.4f}")
+            delta = m["r2"] - ergebnisse["v1"]["r2"]
+            print(f"    R²-Verbesserung ggü. v1: {delta:+.4f}")
 
     if "risk" in ergebnisse:
         m = ergebnisse["risk"]
@@ -119,7 +137,7 @@ def main() -> None:
     parser.add_argument(
         "--skip-bert",
         action="store_true",
-        help="BERT-Anreicherung überspringen (nur v1 + Risk trainieren)",
+        help="BERT überspringen; trainiert nur v1 + Risk (kein Embedding-Cache nötig)",
     )
     parser.add_argument(
         "--only",
@@ -131,19 +149,22 @@ def main() -> None:
     df = lade_daten()
     ergebnisse: dict = {}
 
-    # BERT-Anreicherung – benötigt für v2
-    df_bert = None
+    # BERT – benötigt für v2; Embeddings und Scalar-Features werden zusammen berechnet
+    df_bert: pd.DataFrame | None = None
+    embeddings: np.ndarray | None = None
     braucht_bert = not args.skip_bert and args.only in (None, "v2")
+
     if braucht_bert:
-        df_bert = bert_anreichern(df)
+        df_bert, embeddings = bert_anreichern(df)
 
     # Trainings-Läufe
     if args.only is None or args.only == "v1":
         ergebnisse["v1"] = trainiere_v1(df)
 
     if (args.only is None or args.only == "v2") and not args.skip_bert:
-        df_fuer_v2 = df_bert if df_bert is not None else bert_anreichern(df)
-        ergebnisse["v2"] = trainiere_v2(df_fuer_v2)
+        if df_bert is None or embeddings is None:
+            df_bert, embeddings = bert_anreichern(df)
+        ergebnisse["v2"] = trainiere_v2(df_bert, embeddings)
 
     if args.only is None or args.only == "risk":
         ergebnisse["risk"] = trainiere_risk(df)
