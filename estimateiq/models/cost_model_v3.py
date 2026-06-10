@@ -10,7 +10,7 @@ Verbesserungen gegenüber v2:
                                   (nur auf Trainingsdaten berechnet → kein Leakage)
      HINWEIS: "budget_pro_tag = budget / dauer_tage" wäre Target-Leakage (budget ist
      die Zielvariable), daher ersetzt durch target-encodierten Referenzwert.
-  3. Huber-Loss (reg:pseudohubererror) – robust gegen extreme Budget-Ausreißer
+  3. Squared-Error (log1p auf Zielvariable übernimmt Ausreißer-Dämpfung bereits)
   4. 75 SVD-Komponenten statt 50
   5. Mehr TF-IDF-Features (25.000 statt 20.000)
   6. Beide RMSE-Metriken: gesamt und ohne extreme Ausreißer (≤p95)
@@ -360,8 +360,6 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
         colsample_bytree=0.5,
         reg_alpha=0.1,
         reg_lambda=2.0,
-        objective="reg:pseudohubererror",
-        huber_slope=1.0,
         random_state=42,
         n_jobs=-1,
         eval_metric="rmse",
@@ -369,8 +367,7 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
     )
     modell.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
 
-    # float64 + Clip auf realistischen Budget-Bereich (log1p(500M) ≈ 20.1)
-    y_pred_log = np.clip(modell.predict(X_test).astype(np.float64), 0.0, 21.0)
+    y_pred_log = modell.predict(X_test).astype(np.float64)
     y_pred_eur = np.expm1(y_pred_log)
     y_true_eur = np.expm1(y_test.astype(np.float64))
 

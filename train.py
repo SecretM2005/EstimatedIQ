@@ -63,7 +63,7 @@ def trainiere_v2(df: pd.DataFrame) -> dict:
 def trainiere_v3(df: pd.DataFrame) -> dict:
     from estimateiq.models.cost_model_v3 import train
     logger.info("─" * 50)
-    logger.info("Trainiere Cost Model v3 (Huber-Loss, neue Features, 86 Features)...")
+    logger.info("Trainiere Cost Model v3 (neue Features: Wortanzahl, Deadline, Tagesrate, 86 Features)...")
     return train(df)
 
 
