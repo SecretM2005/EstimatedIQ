@@ -15,8 +15,8 @@ Verbesserungen gegenüber v2:
   5. Mehr TF-IDF-Features (25.000 statt 20.000)
   6. Beide RMSE-Metriken: gesamt und ohne extreme Ausreißer (≤p95)
 
-Features gesamt (86):
-  Kategoriale (2):  land, projekttyp
+Features gesamt (87):
+  Kategoriale (3):  land, projekttyp, datenquelle  (ted | promise | github)
   Numerische  (9):  dauer_tage, beschreibung_laenge, beschreibung_wortanzahl,
                     hat_deadline, tag_rate_ref, komplexitaet,
                     schnittstellen_anzahl, technologien_anzahl, cpv_num
@@ -63,7 +63,7 @@ N_SVD_KOMPONENTEN = 75
 # Feature-Definitionen
 # ---------------------------------------------------------------------------
 
-KATEGORIALE_FEATURES = ["land", "projekttyp"]
+KATEGORIALE_FEATURES = ["land", "projekttyp", "datenquelle"]
 NUMERISCHE_FEATURES  = [
     "dauer_tage",
     "beschreibung_laenge",
@@ -83,6 +83,10 @@ NUMERISCHE_FEATURES  = [
 
 def _feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+
+    # Datenquelle: Fallback "ted" für Datensätze ohne Spalte (API-Requests, alte Parquet-Dateien)
+    if "datenquelle" not in df.columns:
+        df["datenquelle"] = "ted"
 
     df["beschreibung_laenge"] = df["beschreibung"].str.len().fillna(0).astype("float32")
 

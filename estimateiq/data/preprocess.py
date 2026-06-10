@@ -84,7 +84,7 @@ def lade_rohdaten(pfad: str | Path | None = None) -> list[dict]:
 
     if pfad is None or Path(str(pfad)).is_dir():
         verzeichnis = Path(pfad) if pfad else Path("data")
-        # Lädt alle raw_notices_*.jsonl – inkl. raw_notices_awards_*.jsonl (CAN-Vergaben)
+        # TED-Daten: raw_notices_*.jsonl (CN + CAN)
         jahresdateien = sorted(verzeichnis.glob("raw_notices_*.jsonl"))
         if jahresdateien:
             pfade = jahresdateien
@@ -106,6 +106,13 @@ def lade_rohdaten(pfad: str | Path | None = None) -> list[dict]:
                     f"Keine Rohdaten in {verzeichnis}. "
                     "Bitte zuerst: python -m estimateiq.data.fetch_ted"
                 )
+
+        # Zusatzquellen: PROMISE und GitHub (werden falls vorhanden automatisch geladen)
+        for zusatz_name in ["raw_promise.jsonl", "raw_github_projects.jsonl"]:
+            zusatz_pfad = verzeichnis / zusatz_name
+            if zusatz_pfad.exists():
+                pfade.append(zusatz_pfad)
+                logger.info("[Laden] Zusatzquelle erkannt: %s", zusatz_pfad.name)
     else:
         pfad = Path(pfad)
         if not pfad.exists():
@@ -262,14 +269,20 @@ def _konvertiere_zu_dataframe(datensaetze: list[dict]) -> pd.DataFrame:
             zaehler["text_zu_kurz"] += 1
             continue
 
+        # Laufzeit: direktes Feld (PROMISE/GitHub) hat Vorrang vor Datumsberechnung (TED)
+        dauer = rec.get("dauer_tage_direkt") or _berechne_dauer(
+            rec.get("duration_end"), rec.get("publication_date")
+        )
+
         zeilen.append({
             "titel":        titel,
             "beschreibung": beschreibung,
             "budget_eur":   _budget_zu_eur(rec.get("estimated_value"), rec.get("currency")),
-            "dauer_tage":   _berechne_dauer(rec.get("duration_end"), rec.get("publication_date")),
+            "dauer_tage":   dauer,
             "land":         (rec.get("country") or "").upper().strip() or None,
             "cpv_code":     cpv_code,
             "projekttyp":   _cpv_zu_projekttyp(cpv_code),
+            "datenquelle":  rec.get("datenquelle", "ted"),
         })
         zaehler["akzeptiert"] += 1
 
@@ -340,11 +353,12 @@ def _bereinige_dauer(df: pd.DataFrame) -> pd.DataFrame:
 
 def _finalisiere_typen(df: pd.DataFrame) -> pd.DataFrame:
     """Setzt finale pandas-Datentypen für Speichereffizienz."""
-    df["budget_eur"] = pd.to_numeric(df["budget_eur"], errors="coerce").astype("float64")
-    df["dauer_tage"] = pd.to_numeric(df["dauer_tage"], errors="coerce").astype("Int64")
-    df["cpv_code"]   = df["cpv_code"].astype("string")
-    df["land"]       = df["land"].astype("category")
-    df["projekttyp"] = df["projekttyp"].astype("category")
+    df["budget_eur"]  = pd.to_numeric(df["budget_eur"], errors="coerce").astype("float64")
+    df["dauer_tage"]  = pd.to_numeric(df["dauer_tage"], errors="coerce").astype("Int64")
+    df["cpv_code"]    = df["cpv_code"].astype("string")
+    df["land"]        = df["land"].astype("category")
+    df["projekttyp"]  = df["projekttyp"].astype("category")
+    df["datenquelle"] = df["datenquelle"].astype("category")
     logger.info("[Typen] Datentypen finalisiert.")
     return df
 
@@ -423,6 +437,12 @@ def zeige_statistik(df: pd.DataFrame) -> None:
     for land, anzahl in df["land"].value_counts().head(6).items():
         print(f"    {land:<6} {anzahl:>6,}")
 
+    if "datenquelle" in df.columns:
+        print(f"\n  Datenquellen:")
+        for quelle, anzahl in df["datenquelle"].value_counts().items():
+            mit_budget = df[df["datenquelle"] == quelle]["budget_eur"].notna().sum()
+            print(f"    {str(quelle):<10} {anzahl:>6,} Projekte  ({mit_budget:,} mit Budget)")
+
     print(f"\n{trenner}\n")
 
 
@@ -463,7 +483,7 @@ def preprocess_pipeline(
     # 5. Speichern
     speichere_ergebnisse(df, ausgabe_verzeichnis)
 
-    logger.info("=== Preprocessing abgeschlossen: %d Zeilen, 7 Spalten ===", len(df))
+    logger.info("=== Preprocessing abgeschlossen: %d Zeilen, 8 Spalten ===", len(df))
     return df
 
 
