@@ -109,21 +109,14 @@ class TedApiClient:
         self,
         countries: list[str] | None = None,
         year: int | None = None,
-        nur_vergaben: bool = False,
     ) -> str:
         """
         Baut die Expert-Query für die TED v3 API zusammen.
 
-        Args:
-            countries:    ISO alpha-3 Ländercodes (z. B. ['DEU','AUT','CHE'])
-            year:         Filtert auf ein bestimmtes Kalenderjahr
-            nur_vergaben: True → nur Contract Award Notices (CAN), enthält Auftragswert
+        Hinweis: NT= (Notice Type) wird von TED v3 nicht unterstützt.
+        CAN-Filterung erfolgt client-seitig in fetch_notices() via notice_type-Feld.
         """
         filter_teile = ["PC=72*"]
-
-        if nur_vergaben:
-            nt_ausdruck = " OR ".join(f"NT={t}" for t in CAN_TYPEN)
-            filter_teile.append(f"({nt_ausdruck})")
 
         if countries:
             laender_ausdruck = " OR ".join(f"buyer-country={c}" for c in countries)
@@ -226,14 +219,29 @@ class TedApiClient:
             return None
 
     @staticmethod
-    def _extrahiere_wert(feld: list | str | float | int | None) -> float | None:
-        """Liest einen numerischen Wert aus String, Liste oder Zahl."""
+    def _extrahiere_wert(feld) -> float | None:
+        """
+        Liest einen numerischen Wert aus String, Zahl, Liste oder Dict.
+        TED v3 liefert total-value teils als {"number": 420000.0, "currency": "EUR"}.
+        """
         if feld is None:
+            return None
+        if isinstance(feld, dict):
+            # z. B. {"number": 420000.0, "currency": "EUR"} oder {"value": ...}
+            for key in ("number", "value", "amount"):
+                val = feld.get(key)
+                if val is not None:
+                    try:
+                        w = float(str(val).replace(",", ".").replace(" ", ""))
+                        return w if w > 0 else None
+                    except (ValueError, TypeError):
+                        continue
             return None
         if isinstance(feld, (int, float)):
             return float(feld) if feld > 0 else None
         if isinstance(feld, list) and feld:
-            feld = feld[0]
+            # Liste von Dicts oder Skalaren: erstes Element auswerten
+            return TedApiClient._extrahiere_wert(feld[0])
         try:
             wert = float(str(feld).replace(",", ".").replace(" ", ""))
             return wert if wert > 0 else None
@@ -241,10 +249,13 @@ class TedApiClient:
             return None
 
     @staticmethod
-    def _extrahiere_waehrung(feld: list | str | None) -> str | None:
-        """Liest den Währungscode aus einem Array oder String-Feld."""
+    def _extrahiere_waehrung(feld) -> str | None:
+        """Liest den Währungscode aus String, Liste oder Dict."""
         if not feld:
             return None
+        if isinstance(feld, dict):
+            val = feld.get("currency") or feld.get("cur") or feld.get("code")
+            return str(val).upper().strip() if val else None
         val = feld[0] if isinstance(feld, list) else feld
         return str(val).upper().strip() or None
 
@@ -329,8 +340,11 @@ class TedApiClient:
             max_pages:    Maximale Seitenanzahl (None = alle)
             nur_vergaben: True → nur Contract Award Notices (CAN)
         """
-        query = self._build_query(countries=countries, year=year, nur_vergaben=nur_vergaben)
-        logger.info("TED-Abfrage: %s", query)
+        query = self._build_query(countries=countries, year=year)
+        if nur_vergaben:
+            logger.info("TED-Abfrage (CAN-Filter client-seitig): %s", query)
+        else:
+            logger.info("TED-Abfrage: %s", query)
 
         page           = 1
         total_geladen  = 0
@@ -346,12 +360,19 @@ class TedApiClient:
                 logger.info("Keine weiteren Ausschreibungen. Gesamt: %d", total_geladen)
                 break
 
+            seite_geliefert = 0
             for raw_notice in notices:
-                yield self._parse_notice(raw_notice)
+                notice = self._parse_notice(raw_notice)
+                if nur_vergaben:
+                    nt = (notice.notice_type or "").lower()
+                    if not (nt.startswith("can") or nt == "veat"):
+                        continue
+                yield notice
                 total_geladen += 1
+                seite_geliefert += 1
 
-            logger.info("Seite %d: %d Einträge geladen (%d/%d)",
-                        page, len(notices), total_geladen, total)
+            logger.info("Seite %d: %d/%d Einträge behalten (%d gesamt)",
+                        page, seite_geliefert, len(notices), total_geladen)
 
             if max_pages and page >= max_pages:
                 break
