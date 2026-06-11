@@ -1,117 +1,85 @@
 """
-EstimateIQ FastAPI – REST-Schnittstelle für Kostenschätzung und Risikoanalyse.
-Hauptendpoint: POST /api/estimate
+EstimateIQ FastAPI – zweistufige Kostenschätzungs-Pipeline.
+
+Endpoint: POST /api/estimate
+  Body:     { beschreibung: str, region: str }
+  Response: { dauer_tage, personalkosten, kosten_min/expected/max,
+              overhead_faktor, confidence_score, top_risks, similar_projects }
 """
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
-
-from estimateiq.models.bert_extractor import extrahiere_features
-from estimateiq.models.risk_model import predict as predict_risk
-
-# Kostenschätzung: neuestes verfügbares Modell automatisch erkennen (v3 > v2 > v1)
-from estimateiq.models.cost_model_v3 import MODELL_PKL as _V3_PKL
-from estimateiq.models.cost_model_v2 import MODELL_PKL as _V2_PKL
-if _V3_PKL.exists():
-    from estimateiq.models.cost_model_v3 import predict as predict_cost
-    _COST_MODEL_PKL = _V3_PKL
-    _COST_MODEL_VERSION = "3.0"
-elif _V2_PKL.exists():
-    from estimateiq.models.cost_model_v2 import predict as predict_cost
-    _COST_MODEL_PKL = _V2_PKL
-    _COST_MODEL_VERSION = "2.0"
-else:
-    from estimateiq.models.cost_model import predict as predict_cost
-    from estimateiq.models.cost_model import MODELL_PKL as _COST_MODEL_PKL
-    _COST_MODEL_VERSION = "1.0"
+from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+DATA_PATH = Path("data/processed/notices.parquet")
 
 # ---------------------------------------------------------------------------
-# Request / Response Schemas
+# Schemas
 # ---------------------------------------------------------------------------
 
 class EstimateRequest(BaseModel):
-    """Eingabe für eine Kostenschätzung."""
-    title: Annotated[str, Field(min_length=5, max_length=1000, description="Titel der Ausschreibung")]
-    description: Annotated[str, Field(min_length=10, max_length=10000, description="Ausschreibungstext")]
-    cpv_code: Annotated[int | None, Field(None, ge=72000000, le=72900000, description="CPV-Code (IT: 72000000–72900000)")]
-    country: Annotated[str | None, Field(None, max_length=2, description="Ländercode (DE, AT, CH, ...)")]
-    duration_days: Annotated[int | None, Field(None, ge=1, le=3650, description="Geplante Laufzeit in Tagen")]
-    contract_type: Annotated[str | None, Field(None, description="Auftragsart (z. B. 'Dienstleistung')")]
-    procedure_type: Annotated[str | None, Field(None, description="Verfahrensart")]
-    authority_type: Annotated[str | None, Field(None, description="Auftraggeber-Typ")]
-
-    @field_validator("country")
-    @classmethod
-    def uppercase_country(cls, v: str | None) -> str | None:
-        return v.upper() if v else v
+    beschreibung: Annotated[str, Field(min_length=10, max_length=10_000,
+                                       description="Projektbeschreibung")]
+    region: str = Field(default="DE", description="ISO 3166-2 Region (z.B. DE-BY, AT, CH)")
 
 
-class RiskDetail(BaseModel):
-    """Risikoklassifikation mit Wahrscheinlichkeiten."""
-    risk_class: int
-    risk_label: str
-    probability_low: float
-    probability_medium: float
-    probability_high: float
+class SimilarProject(BaseModel):
+    titel:      str
+    budget_eur: float
+    dauer_tage: float | None = None
 
 
 class EstimateResponse(BaseModel):
-    """Antwort mit Kostenschätzung und Risikoanalyse."""
-    model_config = {"protected_namespaces": ()}
-
-    estimated_cost_eur: float = Field(description="Geschätzter Auftragswert in EUR")
-    cost_range_low_eur: float = Field(description="Untere Schranke (–20 %)")
-    cost_range_high_eur: float = Field(description="Obere Schranke (+35 %)")
-    risk: RiskDetail
-    cpv_category: str
-    projekttyp_bert: str = Field(description="Aus Beschreibung erkannter Projekttyp")
-    technologien: list[str] = Field(default_factory=list, description="Erkannte Technologien")
-    komplexitaet: int = Field(description="Komplexitäts-Score 1–5")
-    schnittstellen_anzahl: int = Field(description="Geschätzte Anzahl Schnittstellen")
-    model_version: str = Field(default="1.0.0", description="Aktive Modellversion (1.0 = numerisch, 2.0 = BERT)")
+    dauer_tage:        float
+    personalkosten:    float
+    kosten_min:        float
+    kosten_expected:   float
+    kosten_max:        float
+    overhead_faktor:   float
+    confidence_score:  float
+    top_risks:         list[str]
+    similar_projects:  list[SimilarProject]
 
 
 class HealthResponse(BaseModel):
-    status: str
-    models_loaded: bool
+    status:        str
+    pipeline_ready: bool
+    data_ready:    bool
 
 
 # ---------------------------------------------------------------------------
-# App-Initialisierung
+# App-Lebenszyklus
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Modelle beim Start vorladen, um beim ersten Request keine Verzögerung zu haben."""
-    logger.info("Lade Modelle beim Start (Cost Model v%s)...", _COST_MODEL_VERSION)
+    logger.info("EstimateIQ API startet – lade Pipeline-Modelle...")
     try:
-        predict_cost(__import__("pandas").DataFrame([{
-            "titel": "test", "beschreibung": "test", "budget_eur": None,
-            "dauer_tage": 30, "land": "DE", "cpv_code": "72000000", "projekttyp": "sonstiges_it",
-        }]))
-        logger.info("Modelle erfolgreich geladen.")
+        from estimateiq.models.estimate_pipeline import _lade_duration_modell, _lade_overhead_modell
+        _lade_duration_modell()
+        _lade_overhead_modell()
+        logger.info("Pipeline-Modelle geladen.")
     except FileNotFoundError as exc:
-        logger.warning("Modelle nicht vorhanden, werden bei Bedarf geladen: %s", exc)
+        logger.warning("Modelle noch nicht trainiert: %s", exc)
     except Exception as exc:
-        logger.warning("Modell-Vorlade fehlgeschlagen (wird beim ersten Request geladen): %s", exc)
+        logger.warning("Modell-Vorlade fehlgeschlagen: %s", exc)
     yield
 
 
 app = FastAPI(
     title="EstimateIQ API",
-    description="ML-basierte Kostenschätzung für IT-Ausschreibungen im DACH-Raum",
-    version="1.0.0",
+    description="ML-basierte Projektkostenschätzung für IT-Dienstleister im DACH-Raum",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -127,34 +95,108 @@ app.add_middleware(
 # Hilfsfunktionen
 # ---------------------------------------------------------------------------
 
-def _cpv_to_category(cpv_code: int | None) -> str:
-    """Vereinfachte Zuordnung CPV → Kategoriename (ohne Import des gesamten Preprocessors)."""
-    if cpv_code is None:
-        return "unbekannt"
-    ranges = {
-        "software": (72200000, 72299999),
-        "beratung": (72300000, 72399999),
-        "infrastruktur": (72400000, 72499999),
-        "wartung": (72500000, 72699999),
-        "sicherheit": (72700000, 72799999),
-    }
-    for name, (lo, hi) in ranges.items():
-        if lo <= cpv_code <= hi:
-            return name
-    return "sonstiges_it"
+# Keyword → Risikotext
+_KEYWORD_RISIKEN: list[tuple[list[str], str]] = [
+    (["sap", "erp", "migration"],
+     "SAP/ERP-Schnittstellenkomplexität kann Integrationsdauer um 30–50 % verlängern."),
+    (["cloud", "aws", "azure", "kubernetes", "docker"],
+     "Cloud-Kosten ohne Monitoring schnell unkontrollierbar – Budgetobergrenze früh definieren."),
+    (["dsgvo", "gdpr", "datenschutz", "sicherheit", "security", "nis2"],
+     "Datenschutz- und Sicherheitsanforderungen erzeugen häufig ungeplantem Mehraufwand."),
+    (["legacy", "ablösung", "datenmigration", "bestandssystem"],
+     "Legacy-Abhängigkeiten erhöhen das Risiko von Datenmigrationsverzögerungen erheblich."),
+    (["schnittstelle", "api", "anbindung", "integration", "webhook"],
+     "Externe API-Anbindungen erfordern verlässliche Dokumentation und Testumgebungen beim Drittanbieter."),
+    (["mobil", "mobile", "ios", "android", "app"],
+     "Mobile-Entwicklung für iOS und Android verdoppelt typischerweise Test- und Review-Aufwand."),
+    (["deadline", "termin", "q1", "q2", "q3", "q4", "jahresende"],
+     "Feste Deadlines erhöhen das Risiko von Scope-Creep und Qualitätseinbußen unter Zeitdruck."),
+    (["ki", "ai", "ml", "machine learning", "llm", "gpt"],
+     "KI-Komponenten haben hohe Evaluierungs- und Nachtrainingskosten; ROI unsicher in MVP-Projekten."),
+    (["nutzer", "mitarbeiter", "200", "500", "1000", "user"],
+     "Nutzerverwaltung für größere Userzahlen erfordert Skalierbarkeits- und Lastplanung."),
+]
+
+_PROJEKTTYP_FALLBACK: dict[str, str] = {
+    "Softwareentwicklung":           "Anforderungsänderungen sind der häufigste Kostentreiber – agiles Vorgehen empfohlen.",
+    "Datenverarbeitung & Analytics": "Datenqualität wird systematisch unterschätzt; Bereinigung kostet bis zu 30 % des Aufwands.",
+    "Internet- & Cloud-Dienste":     "Vendor-Lock-in bei Cloud-Diensten kann spätere Migrationskosten massiv erhöhen.",
+    "IT-Betrieb & Wartung":          "SLA-Anforderungen treiben Bereitschaftskosten; Eskalationsprozesse früh definieren.",
+    "Netzwerk & Infrastruktur":      "Hardware-Lieferzeiten können Projektstart um 6–12 Wochen verzögern.",
+    "IT-Beratung & Support":         "Wissenstransfer-Phasen werden häufig im Budget nicht eingeplant.",
+    "IT-Hardware & Systeme":         "Kompatibilitätsrisiken mit Bestandssystemen schwer vorab quantifizierbar.",
+}
 
 
-def _request_to_dataframe(req: EstimateRequest) -> pd.DataFrame:
-    """Wandelt eine EstimateRequest in einen einzeiligen DataFrame um (passend zu preprocess.py)."""
-    return pd.DataFrame([{
-        "titel": req.title,
-        "beschreibung": req.description,
-        "budget_eur": None,
-        "dauer_tage": req.duration_days,
-        "land": req.country or "DE",
-        "cpv_code": f"{req.cpv_code or 72000000:08d}",
-        "projekttyp": _cpv_to_category(req.cpv_code),
-    }])
+def _generiere_risiken(beschreibung: str, projekttyp: str, ergebnis) -> list[str]:
+    text = beschreibung.lower()
+    risiken: list[str] = []
+
+    for keywords, risikotext in _KEYWORD_RISIKEN:
+        if any(kw in text for kw in keywords):
+            risiken.append(risikotext)
+        if len(risiken) >= 3:
+            break
+
+    if len(risiken) < 3 and projekttyp in _PROJEKTTYP_FALLBACK:
+        risiken.append(_PROJEKTTYP_FALLBACK[projekttyp])
+
+    if len(risiken) < 3:
+        try:
+            ratio = ergebnis.tagespreis_p90 / max(1.0, ergebnis.tagespreis_p10)
+            if ratio > 8:
+                risiken.append(
+                    f"Hohe Kostenstreuung (Faktor {ratio:.0f}×) in vergleichbaren Projekten – "
+                    "intensive Anforderungsklärung vor Angebotserstellung empfohlen."
+                )
+        except Exception:
+            pass
+
+    if not risiken:
+        risiken.append("Allgemeines Risiko: Anforderungsänderungen können Budget und Zeitplan beeinflussen.")
+
+    return risiken[:3]
+
+
+def _finde_aehnliche_projekte(projekttyp: str, budget_target: float, n: int = 3) -> list[dict]:
+    if not DATA_PATH.exists():
+        return []
+    try:
+        df = pd.read_parquet(DATA_PATH)
+        df_budget = df[df["budget_eur"].notna() & (df["budget_eur"] > 0)].copy()
+        df_typ = df_budget[df_budget["projekttyp"] == projekttyp]
+        # Fall back auf alle Projekte wenn zu wenig vom gleichen Typ
+        if len(df_typ) < n:
+            df_typ = df_budget
+        df_typ = df_typ.copy()
+        df_typ["_dist"] = (
+            np.log1p(df_typ["budget_eur"]) - np.log1p(budget_target)
+        ).abs()
+        df_nahe = df_typ.nsmallest(n, "_dist")
+
+        projekte = []
+        for _, row in df_nahe.iterrows():
+            text = str(row.get("beschreibung") or "")
+            titel = text[:90].rsplit(" ", 1)[0] + "…" if len(text) > 90 else text
+            projekte.append({
+                "titel":      titel or "IT-Projekt",
+                "budget_eur": float(row["budget_eur"]),
+                "dauer_tage": float(row["dauer_tage"]) if pd.notna(row.get("dauer_tage")) else None,
+            })
+        return projekte
+    except Exception as exc:
+        logger.warning("Ähnliche Projekte konnten nicht geladen werden: %s", exc)
+        return []
+
+
+def _confidence_score(ergebnis) -> float:
+    """Schmaleres Konfidenzintervall → höhere Konfidenz."""
+    try:
+        ratio = ergebnis.kosten_high / max(1.0, ergebnis.kosten_low)
+        conf  = float(np.clip(1.0 - 0.35 * np.log(max(1.0, ratio)), 0.10, 0.92))
+        return conf
+    except Exception:
+        return 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -163,77 +205,58 @@ def _request_to_dataframe(req: EstimateRequest) -> pd.DataFrame:
 
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health_check():
-    """Liefert den Betriebsstatus der API."""
-    try:
-        from pathlib import Path
-        models_ok = _COST_MODEL_PKL.exists()
-    except Exception:
-        models_ok = False
-    return HealthResponse(status="ok", models_loaded=models_ok)
+    from estimateiq.models.duration_model import MODELL_PKL as DUR_PKL
+    from estimateiq.models.overhead_model import MODELL_PKL as OH_PKL
+    pipeline_ok = DUR_PKL.exists() and OH_PKL.exists()
+    return HealthResponse(
+        status="ok",
+        pipeline_ready=pipeline_ok,
+        data_ready=DATA_PATH.exists(),
+    )
 
 
 @app.post("/api/estimate", response_model=EstimateResponse, tags=["Schätzung"])
 async def estimate(req: EstimateRequest):
     """
-    Schätzt Projektkosten und Risiko für eine IT-Ausschreibung.
+    Schätzt Projektkosten via zweistufiger ML-Pipeline.
 
-    - **title**: Ausschreibungstitel
-    - **description**: Volltext der Ausschreibung
-    - **cpv_code**: CPV-Code (optional, IT-Bereich 72000000–72900000)
-    - **country**: Ländercode (optional, Standard: DE)
+    - **beschreibung**: Freitext-Projektbeschreibung (mind. 10 Zeichen)
+    - **region**: ISO 3166-2 (DE, DE-BY, DE-BW, DE-NW, AT, CH, ...)
     """
     try:
-        df = _request_to_dataframe(req)
+        from estimateiq.models.estimate_pipeline import estimate as pipeline_estimate
 
-        # BERT-Features aus Beschreibung extrahieren
-        bert = extrahiere_features(req.description)
-
-        # DataFrame um Scalar-BERT-Features anreichern (v1 ignoriert diese Spalten)
-        df["komplexitaet"]          = bert["komplexitaet"]
-        df["schnittstellen_anzahl"] = bert["schnittstellen_anzahl"]
-        df["technologien"]          = [bert["technologien"]]
-
-        # Kostenschätzung: v2 bekommt Embedding-Vektor, v1 ignoriert ihn
-        cost_predictions = predict_cost(df, embeddings=bert.get("embeddings"))
-        estimated_cost = float(cost_predictions[0])
-
-        # Risikoanalyse
-        risk_result = predict_risk(df)
-        risk_class = int(risk_result["risk_class"][0])
-        risk_label = risk_result["risk_label"][0]
-        probas = risk_result["probabilities"][0]
-        while len(probas) < 3:
-            probas.append(0.0)
-
-        return EstimateResponse(
-            estimated_cost_eur=round(estimated_cost, 2),
-            cost_range_low_eur=round(estimated_cost * 0.80, 2),
-            cost_range_high_eur=round(estimated_cost * 1.35, 2),
-            risk=RiskDetail(
-                risk_class=risk_class,
-                risk_label=risk_label,
-                probability_low=round(probas[0], 4),
-                probability_medium=round(probas[1], 4),
-                probability_high=round(probas[2], 4),
-            ),
-            cpv_category=_cpv_to_category(req.cpv_code),
-            projekttyp_bert=bert["projekttyp_bert"],
-            technologien=bert["technologien"],
-            komplexitaet=bert["komplexitaet"],
-            schnittstellen_anzahl=bert["schnittstellen_anzahl"],
-            model_version=_COST_MODEL_VERSION,
+        land = req.region[:2].upper() if req.region else "DE"
+        ergebnis = pipeline_estimate(
+            beschreibung = req.beschreibung,
+            land         = land,
+            region       = req.region,
+            datenquelle  = "ted",
         )
-
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=503,
-            detail=f"Modell nicht trainiert. Bitte zuerst Training durchführen. ({exc})",
+            detail=(
+                f"Pipeline-Modell nicht trainiert. "
+                f"Bitte zuerst ausführen: python train.py --only pipeline. ({exc})"
+            ),
         ) from exc
     except Exception as exc:
-        logger.exception("Fehler bei Schätzung: %s", exc)
+        logger.exception("Pipeline-Fehler: %s", exc)
         raise HTTPException(status_code=500, detail=f"Interner Fehler: {exc}") from exc
 
+    risiken   = _generiere_risiken(req.beschreibung, ergebnis.projekttyp, ergebnis)
+    aehnliche = _finde_aehnliche_projekte(ergebnis.projekttyp, ergebnis.kosten_expected)
+    konfidenz = _confidence_score(ergebnis)
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("estimateiq.api.main:app", host="0.0.0.0", port=8000, reload=True)
+    return EstimateResponse(
+        dauer_tage       = round(ergebnis.dauer_tage, 1),
+        personalkosten   = round(ergebnis.personalkosten, 2),
+        kosten_min       = round(ergebnis.kosten_min, 2),
+        kosten_expected  = round(ergebnis.kosten_expected, 2),
+        kosten_max       = round(ergebnis.kosten_max, 2),
+        overhead_faktor  = round(ergebnis.overhead_faktor_p50, 3),
+        confidence_score = round(konfidenz, 3),
+        top_risks        = risiken,
+        similar_projects = [SimilarProject(**p) for p in aehnliche],
+    )
