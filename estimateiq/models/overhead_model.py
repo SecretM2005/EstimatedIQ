@@ -174,10 +174,15 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
 
     df = _feature_engineering(df)
 
-    # Alle Budget-Projekte als Basis (nicht nur jene mit tatsächlicher Laufzeit)
+    # Alle Budget-Projekte als Basis (nicht nur jene mit tatsächlicher Laufzeit).
+    # PROMISE ausschließen: synthetische Budgets (effort × Stundensatz) verzerren
+    # die Tagespreis-Verteilung und stimmen nicht mit echten Marktpreisen überein.
     maske_budget = df["budget_eur"].notna()
+    if "datenquelle" in df.columns:
+        maske_budget &= (df["datenquelle"] != "promise")
     df_sauber = df[maske_budget].reset_index(drop=True)
-    logger.info("[Tagespreis] %d Budget-Projekte gesamt (aus %d).", len(df_sauber), len(df))
+    logger.info("[Tagespreis] %d Budget-Projekte gesamt (aus %d, PROMISE ausgeschlossen).",
+                len(df_sauber), len(df))
 
     if len(df_sauber) < 30:
         raise ValueError(f"Zu wenig Trainingsdaten: {len(df_sauber)} (Minimum: 30).")
