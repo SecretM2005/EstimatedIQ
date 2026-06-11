@@ -13,15 +13,15 @@ build/
 venv/
 env/
 
-# ML-Artefakte (lokal, nicht im Repo)
-models/*.pkl
-models/*.joblib
-models/*.png
+# ML-Artefakte (lokal, nicht im Repo) - covered by models/ above
 
 # Daten (lokal, nicht im Repo)
-data/raw_notices*.jsonl
-data/processed/
-data/*.npy
+data/
+models/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
 
 # IDE
 .vscode/
