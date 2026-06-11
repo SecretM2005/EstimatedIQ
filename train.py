@@ -21,7 +21,7 @@ Optionen:
   --only risk      Nur Risk Model
   --only duration  Nur Laufzeit-Modell (Stufe 1, zweistufige Pipeline)
   --only overhead  Nur Overhead-Modell (Stufe 2, zweistufige Pipeline)
-  --only pipeline  Beide Pipeline-Modelle (duration + overhead)
+  --only pipeline  Alle drei Ensemble-Modelle (v3 + duration + overhead)
 """
 
 import argparse
@@ -182,7 +182,7 @@ def main() -> None:
     if args.only is None or args.only == "v2":
         ergebnisse["v2"] = trainiere_v2(df)
 
-    if args.only is None or args.only == "v3":
+    if args.only in (None, "v3", "pipeline"):
         ergebnisse["v3"] = trainiere_v3(df)
 
     if args.only is None or args.only == "risk":

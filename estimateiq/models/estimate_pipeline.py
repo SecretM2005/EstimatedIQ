@@ -136,6 +136,7 @@ class PipelineErgebnis:
 
 _duration_modell_cache: dict = {}
 _overhead_modell_cache: dict = {}
+_v3_modell_cache: dict = {}
 
 
 def _lade_duration_modell():
@@ -151,6 +152,13 @@ def _lade_duration_modell():
         _duration_modell_cache["_feature_eng"]     = _fe
         _duration_modell_cache["_feature_matrix"]  = _fm
     return _duration_modell_cache
+
+
+def _lade_v3_modell():
+    if not _v3_modell_cache:
+        from estimateiq.models.cost_model_v3 import predict as _predict
+        _v3_modell_cache["predict"] = _predict
+    return _v3_modell_cache
 
 
 def _lade_overhead_modell():
@@ -244,6 +252,38 @@ def estimate(
         "[Pipeline] Tagespreis p50=%,.0f €/Tag × %d Tage → Erwartet: %,.0f € [%,.0f – %,.0f €]",
         tp["p50"], round(dauer_tage), kosten_expected, kosten_low, kosten_high,
     )
+
+    # ----- Schritt 3b: Ensemble mit Cost-Model-v3 (geometrisches Mittel) -----
+    # v3 schätzt budget_eur direkt (unabhängiger Ansatz). Das geometrische Mittel
+    # beider Vorhersagen reduziert den Fehler stärker als jedes Modell allein.
+    try:
+        v3_cache = _lade_v3_modell()
+        df_v3 = pd.DataFrame([{
+            "beschreibung": beschreibung,
+            "cpv_code":     cpv_str,
+            "land":         land_upper,
+            "projekttyp":   projekttyp,
+            "datenquelle":  datenquelle,
+            "dauer_tage":   dauer_tage,
+        }])
+        kosten_v3 = float(v3_cache["predict"](df_v3)[0])
+        if kosten_v3 > 0 and kosten_expected > 0:
+            # 50/50-Gewichtung im log-Raum = geometrisches Mittel
+            kosten_ensemble = float(np.exp(
+                0.5 * np.log(kosten_expected) + 0.5 * np.log(kosten_v3)
+            ))
+            skala = kosten_ensemble / kosten_expected
+            kosten_min      *= skala
+            kosten_low      *= skala
+            kosten_expected  = kosten_ensemble
+            kosten_high     *= skala
+            kosten_max      *= skala
+            logger.debug(
+                "[Pipeline] Ensemble: Pipeline=%,.0f € | v3=%,.0f € → Blend=%,.0f € (Faktor %.2f×)",
+                kosten_expected / skala, kosten_v3, kosten_expected, skala,
+            )
+    except FileNotFoundError:
+        logger.debug("[Pipeline] v3-Modell nicht verfügbar – nur Tagespreis-Pipeline aktiv.")
 
     # ----- Reporting: Personalkosten (zur Information, nicht zur Schätzung) -----
     teamgroesse = oh_cache["teamgroesse"](beschreibung, projekttyp)
