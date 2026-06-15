@@ -43,8 +43,8 @@ ENCODER_PKL  = MODELL_DIR / "duration_encoders.pkl"
 PLOT_PNG     = MODELL_DIR / "duration_importance.png"
 
 N_SVD              = 50
-KATEGORIALE        = ["land", "projekttyp", "datenquelle"]
-NUMERISCHE         = ["beschreibung_laenge", "beschreibung_wortanzahl", "cpv_num"]
+KATEGORIALE        = ["land", "projekttyp", "datenquelle", "technologie"]
+NUMERISCHE         = ["beschreibung_laenge", "beschreibung_wortanzahl", "cpv_num", "jahr"]
 DAUER_MIN_TAGE     = 7
 DAUER_MAX_TAGE     = 3_650
 
@@ -57,9 +57,17 @@ def _feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if "datenquelle" not in df.columns:
         df["datenquelle"] = "ted"
+    if "technologie" not in df.columns:
+        df["technologie"] = "unbekannt"
+    else:
+        df["technologie"] = df["technologie"].fillna("unbekannt").astype(str)
     df["beschreibung_laenge"]     = df["beschreibung"].str.len().fillna(0).astype("float32")
     df["beschreibung_wortanzahl"] = df["beschreibung"].str.split().str.len().fillna(0).astype("float32")
     df["cpv_num"] = pd.to_numeric(df["cpv_code"], errors="coerce").fillna(72_000_000).astype("float32")
+    if "jahr" in df.columns:
+        df["jahr"] = pd.to_numeric(df["jahr"], errors="coerce").fillna(2023).astype("float32")
+    else:
+        df["jahr"] = np.float32(2023)
     return df
 
 

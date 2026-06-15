@@ -6,16 +6,19 @@ Abruf-Reihenfolge:
   2. PROMISE Repository (Derek Jones GitHub)
   3. GitHub Archivierte IT-Projekte
   4. COSMIC Benchmark-Datensätze (Zenodo ISBSG + Valdes-Souto)
+  5. IndieHackers Produktseiten (time-to-build aus Beschreibung)
 
 Verwendung:
-  python fetch_all.py                          # alle Quellen
-  python fetch_all.py --nur ted               # nur TED
-  python fetch_all.py --nur promise           # nur PROMISE
-  python fetch_all.py --nur github            # nur GitHub
-  python fetch_all.py --nur cosmic            # nur COSMIC (öffentliche Quellen)
+  python fetch_all.py                           # alle Quellen
+  python fetch_all.py --nur ted                # nur TED
+  python fetch_all.py --nur promise            # nur PROMISE
+  python fetch_all.py --nur github             # nur GitHub
+  python fetch_all.py --nur cosmic             # nur COSMIC (öffentliche Quellen)
+  python fetch_all.py --nur indiehackers       # nur IndieHackers
   python fetch_all.py --nur cosmic --cosmic-lokal datei.csv  # COSMIC aus lokalem File
-  python fetch_all.py --max-seiten 2         # TED: max. 2 Seiten/Jahr (Test)
-  python fetch_all.py --max-repos 100        # GitHub: max. 100 Repos (Test)
+  python fetch_all.py --max-seiten 2          # TED: max. 2 Seiten/Jahr (Test)
+  python fetch_all.py --max-repos 100         # GitHub: max. 100 Repos (Test)
+  python fetch_all.py --max-ih-seiten 5       # IndieHackers: max. 5 Seiten (Test)
 """
 
 import argparse
@@ -58,17 +61,24 @@ def fetch_cosmic(lokal: Path | None = None) -> int:
     from estimateiq.data.fetch_cosmic import fetch_cosmic_data
     logger.info("━" * 55)
     if lokal:
-        logger.info("Quelle 4/4 – COSMIC Datensatz (lokal: %s)", lokal)
+        logger.info("Quelle 4/5 – COSMIC Datensatz (lokal: %s)", lokal)
     else:
-        logger.info("Quelle 4/4 – COSMIC Benchmark-Datensätze (Zenodo + Valdes-Souto)")
+        logger.info("Quelle 4/5 – COSMIC Benchmark-Datensätze (Zenodo + Valdes-Souto)")
     return fetch_cosmic_data(lokal=lokal)
+
+
+def fetch_indiehackers(max_seiten: int = 20) -> int:
+    from estimateiq.data.fetch_indiehackers import fetch_indiehackers_data
+    logger.info("━" * 55)
+    logger.info("Quelle 5/5 – IndieHackers Produkte (max %d Seiten)", max_seiten)
+    return fetch_indiehackers_data(max_seiten=max_seiten)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="EstimateIQ – Alle Datenquellen abrufen")
     parser.add_argument(
         "--nur",
-        choices=["ted", "promise", "github", "cosmic"],
+        choices=["ted", "promise", "github", "cosmic", "indiehackers"],
         help="Nur eine bestimmte Quelle abrufen",
     )
     parser.add_argument(
@@ -82,6 +92,10 @@ def main() -> None:
     parser.add_argument(
         "--max-repos", type=int, default=500,
         help="GitHub: Maximale Anzahl Repositories (Standard: 500)",
+    )
+    parser.add_argument(
+        "--max-ih-seiten", type=int, default=20,
+        help="IndieHackers: Maximale Seitenanzahl (Standard: 20)",
     )
     args = parser.parse_args()
 
@@ -99,6 +113,9 @@ def main() -> None:
     if args.nur is None or args.nur == "cosmic":
         ergebnisse["cosmic"] = fetch_cosmic(lokal=args.cosmic_lokal)
 
+    if args.nur is None or args.nur == "indiehackers":
+        ergebnisse["indiehackers"] = fetch_indiehackers(max_seiten=args.max_ih_seiten)
+
     # Zusammenfassung
     trenner = "═" * 55
     print(f"\n{trenner}")
@@ -109,18 +126,21 @@ def main() -> None:
         ted = ergebnisse["ted"]
         cn_gesamt  = sum(ted["cn"].values())
         can_gesamt = sum(ted["can"].values())
-        print(f"\n  TED (CN):    {cn_gesamt:>6,} Ausschreibungen")
-        print(f"  TED (CAN):   {can_gesamt:>6,} Vergaben")
-        print(f"  TED Gesamt:  {cn_gesamt + can_gesamt:>6,}")
+        print(f"\n  TED (CN):         {cn_gesamt:>6,} Ausschreibungen")
+        print(f"  TED (CAN):        {can_gesamt:>6,} Vergaben")
+        print(f"  TED Gesamt:       {cn_gesamt + can_gesamt:>6,}")
 
     if "promise" in ergebnisse:
-        print(f"\n  PROMISE:     {ergebnisse['promise']:>6,} Projekte")
+        print(f"\n  PROMISE:          {ergebnisse['promise']:>6,} Projekte")
 
     if "github" in ergebnisse:
-        print(f"  GitHub:      {ergebnisse['github']:>6,} Repositories")
+        print(f"  GitHub:           {ergebnisse['github']:>6,} Repositories")
 
     if "cosmic" in ergebnisse:
-        print(f"  COSMIC:      {ergebnisse['cosmic']:>6,} Projekte")
+        print(f"  COSMIC:           {ergebnisse['cosmic']:>6,} Projekte")
+
+    if "indiehackers" in ergebnisse:
+        print(f"  IndieHackers:     {ergebnisse['indiehackers']:>6,} Produkte")
 
     print(f"\n  Nächster Schritt:")
     print("    python -m estimateiq.data.preprocess")

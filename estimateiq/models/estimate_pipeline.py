@@ -1,22 +1,21 @@
 """
-EstimateIQ – Zweistufige Kostenschätzungs-Pipeline.
+EstimateIQ – Deterministische Kostenschätzungs-Pipeline.
 
 Pipeline:
-  Schritt 1: Laufzeit schätzen
+  Schritt 1: Laufzeit schätzen (ML)
     dauer_tage = duration_model.predict(beschreibung, cpv_code, land)
 
-  Schritt 2: Tagespreis schätzen
-    tagespreis = overhead_model.predict(...)   → {p10, p25, p50, p75, p90}  [EUR/Tag]
+  Schritt 2: Kosten deterministisch berechnen
+    technologie    = Keyword-Erkennung aus Beschreibung
+    stundensatz    = salary_lookup.get(region, technologie)
+    teamgroesse    = extract_teamgroesse(beschreibung)  # Fallback: 2
+    overhead       = overhead_lookup.get(projekttyp)    # Web=1.3, ML=1.6, SAP=1.8
+    personalkosten = dauer_tage × teamgroesse × stundensatz × 8h
+    kosten         = personalkosten × overhead
 
-  Schritt 3: Gesamtkosten berechnen
-    kosten_min      = dauer_tage × tagespreis.p10
-    kosten_expected = dauer_tage × tagespreis.p50
-    kosten_max      = dauer_tage × tagespreis.p90
-
-  Für Reporting (nicht für Kostenschätzung):
-    teamgroesse     = extract_teamgroesse(beschreibung, projekttyp)
-    stundensatz     = get_stundensatz(region)
-    personalkosten  = dauer_tage × teamgroesse × stundensatz × 8 h/Tag
+  Schritt 3: Kostenbänder (±20 % / ±40 %)
+    kosten_low/high  = kosten × [0.8, 1.4]
+    kosten_min/max   = kosten × [0.6, 2.0]
 
 Verwendung:
   from estimateiq.models.estimate_pipeline import estimate, PipelineErgebnis
@@ -32,6 +31,7 @@ Verwendung:
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -39,6 +39,23 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+STUNDEN_PRO_TAG = 8.0
+
+# Overhead-Faktor je Projekttyp (deterministisch, kein ML)
+# Quelle: Destatis Branchenstruktur + Erfahrungswerte DACH IT-Markt
+OVERHEAD_FAKTOREN: dict[str, float] = {
+    "Softwareentwicklung":           1.3,
+    "Internet- & Cloud-Dienste":     1.3,
+    "IT-Betrieb & Wartung":          1.2,
+    "IT-Beratung & Support":         1.2,
+    "Datenverarbeitung & Analytics": 1.6,
+    "IT-Prüfung & Testing":          1.3,
+    "Netzwerk & Infrastruktur":      1.4,
+    "Datenmigration & Backup":       1.5,
+    "IT-Hardware & Systeme":         1.3,
+    "Sonstige IT":                   1.3,
+}
 
 # CPV-Code → Projekttyp (aus preprocess.py gespiegelt)
 _CPV_PROJEKTTYPEN: list[tuple[range, str]] = [
@@ -65,6 +82,28 @@ def _cpv_zu_projekttyp(cpv_code: str | int | None) -> str:
     except (ValueError, TypeError):
         pass
     return "Softwareentwicklung"
+
+
+def _overhead_faktor(beschreibung: str, projekttyp: str) -> float:
+    """Bestimmt Overhead-Faktor aus Projekttyp mit SAP/Mobile-Keyword-Vorrang."""
+    text = (beschreibung or "").lower()
+    if re.search(r"\bsap\b", text):
+        return 1.8
+    if re.search(r"\b(mobil|mobile|ios|android|flutter|react\s*native)\b", text):
+        return 1.4
+    return OVERHEAD_FAKTOREN.get(projekttyp, 1.3)
+
+
+def _extrahiere_technologie(beschreibung: str) -> str:
+    """Erkennt dominante Technologie aus Freitext für den Stundensatz-Lookup."""
+    text = (beschreibung or "").lower()
+    if re.search(r"\bsap\b", text):
+        return "SAP"
+    for tech in ["Rust", "Kotlin", "Swift", "Python", "Scala",
+                 "TypeScript", "JavaScript", "Java", "C#", "PHP", "Ruby", "Go"]:
+        if re.search(rf"\b{re.escape(tech.lower())}\b", text):
+            return tech
+    return "all"
 
 
 # ---------------------------------------------------------------------------
@@ -135,8 +174,6 @@ class PipelineErgebnis:
 # ---------------------------------------------------------------------------
 
 _duration_modell_cache: dict = {}
-_overhead_modell_cache: dict = {}
-_v3_modell_cache: dict = {}
 
 
 def _lade_duration_modell():
@@ -154,28 +191,14 @@ def _lade_duration_modell():
     return _duration_modell_cache
 
 
-def _lade_v3_modell():
-    if not _v3_modell_cache:
-        from estimateiq.models.cost_model_v3 import predict as _predict
-        _v3_modell_cache["predict"] = _predict
-    return _v3_modell_cache
-
-
 def _lade_overhead_modell():
-    if not _overhead_modell_cache:
-        from estimateiq.models.overhead_model import (
-            predict as _predict,
-            _feature_engineering as _fe,
-            _erstelle_feature_matrix as _fm,
-            extract_teamgroesse,
-            berechne_personalkosten,
-        )
-        _overhead_modell_cache["predict"]         = _predict
-        _overhead_modell_cache["_feature_eng"]    = _fe
-        _overhead_modell_cache["_feature_matrix"] = _fm
-        _overhead_modell_cache["teamgroesse"]     = extract_teamgroesse
-        _overhead_modell_cache["personalkosten"]  = berechne_personalkosten
-    return _overhead_modell_cache
+    """Stub für Rückwärtskompatibilität – Overhead wird jetzt deterministisch berechnet."""
+    return {}
+
+
+def _lade_v3_modell():
+    """Stub für Rückwärtskompatibilität – v3 nicht mehr im Ensemble."""
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +214,7 @@ def estimate(
     dauer_override: float | None = None,
 ) -> PipelineErgebnis:
     """
-    Schätzt Projektkosten via zweistufiger Pipeline.
+    Schätzt Projektkosten via deterministischer Pipeline.
 
     Args:
         beschreibung:   Volltext der Ausschreibung (min. 5 Zeichen)
@@ -207,11 +230,11 @@ def estimate(
     if not beschreibung or len(beschreibung) < 5:
         raise ValueError("beschreibung muss mindestens 5 Zeichen lang sein.")
 
-    cpv_str = str(cpv_code or "72200000")
+    cpv_str    = str(cpv_code or "72200000")
     projekttyp = _cpv_zu_projekttyp(cpv_str)
     land_upper = (land or "DE").upper()[:2]
 
-    # ----- Schritt 1: Laufzeit -----
+    # ----- Schritt 1: Laufzeit (ML) -----
     if dauer_override is not None:
         dauer_tage = float(dauer_override)
         logger.debug("[Pipeline] Laufzeit (überschrieben): %d Tage", round(dauer_tage))
@@ -224,88 +247,53 @@ def estimate(
             "projekttyp":   projekttyp,
             "datenquelle":  datenquelle,
         }])
-        pred = dur_cache["predict"](df_dur)
+        pred       = dur_cache["predict"](df_dur)
         dauer_tage = float(pred[0])
         logger.debug("[Pipeline] Laufzeit geschätzt: %d Tage", round(dauer_tage))
 
-    # ----- Schritt 2: Tagespreis schätzen -----
-    oh_cache = _lade_overhead_modell()
-    df_oh = pd.DataFrame([{
-        "beschreibung": beschreibung,
-        "cpv_code":     cpv_str,
-        "land":         land_upper,
-        "projekttyp":   projekttyp,
-        "datenquelle":  datenquelle,
-        "dauer_tage":   dauer_tage,
-    }])
-    tagespreis_liste = oh_cache["predict"](df_oh)
-    tp = tagespreis_liste[0]  # {p10, p25, p50, p75, p90} in EUR/Tag
+    # ----- Schritt 2: Kosten deterministisch berechnen -----
+    from estimateiq.models.overhead_model import extract_teamgroesse
+    teamgroesse = extract_teamgroesse(beschreibung, projekttyp)
 
-    # ----- Schritt 3: Gesamtkosten -----
-    kosten_min      = dauer_tage * tp["p10"]
-    kosten_low      = dauer_tage * tp["p25"]
-    kosten_expected = dauer_tage * tp["p50"]
-    kosten_high     = dauer_tage * tp["p75"]
-    kosten_max      = dauer_tage * tp["p90"]
-
-    logger.debug(
-        "[Pipeline] Tagespreis p50=%,.0f €/Tag × %d Tage → Erwartet: %,.0f € [%,.0f – %,.0f €]",
-        tp["p50"], round(dauer_tage), kosten_expected, kosten_low, kosten_high,
-    )
-
-    # ----- Schritt 3b: Ensemble mit Cost-Model-v3 (geometrisches Mittel) -----
-    # v3 schätzt budget_eur direkt (unabhängiger Ansatz). Das geometrische Mittel
-    # beider Vorhersagen reduziert den Fehler stärker als jedes Modell allein.
-    try:
-        v3_cache = _lade_v3_modell()
-        df_v3 = pd.DataFrame([{
-            "beschreibung": beschreibung,
-            "cpv_code":     cpv_str,
-            "land":         land_upper,
-            "projekttyp":   projekttyp,
-            "datenquelle":  datenquelle,
-            "dauer_tage":   dauer_tage,
-        }])
-        kosten_v3 = float(v3_cache["predict"](df_v3)[0])
-        if kosten_v3 > 0 and kosten_expected > 0:
-            # 50/50-Gewichtung im log-Raum = geometrisches Mittel
-            kosten_ensemble = float(np.exp(
-                0.5 * np.log(kosten_expected) + 0.5 * np.log(kosten_v3)
-            ))
-            skala = kosten_ensemble / kosten_expected
-            kosten_min      *= skala
-            kosten_low      *= skala
-            kosten_expected  = kosten_ensemble
-            kosten_high     *= skala
-            kosten_max      *= skala
-            logger.debug(
-                "[Pipeline] Ensemble: Pipeline=%,.0f € | v3=%,.0f € → Blend=%,.0f € (Faktor %.2f×)",
-                kosten_expected / skala, kosten_v3, kosten_expected, skala,
-            )
-    except FileNotFoundError:
-        logger.debug("[Pipeline] v3-Modell nicht verfügbar – nur Tagespreis-Pipeline aktiv.")
-
-    # ----- Reporting: Personalkosten (zur Information, nicht zur Schätzung) -----
-    teamgroesse = oh_cache["teamgroesse"](beschreibung, projekttyp)
+    technologie = _extrahiere_technologie(beschreibung)
 
     try:
         from estimateiq.data.fetch_salary_data import get_stundensatz as _get_stundensatz
-        salary_info  = _get_stundensatz(region, "all")
-        stundensatz  = salary_info["stundensatz_median"]
+        salary_info   = _get_stundensatz(region, technologie)
+        stundensatz   = salary_info["stundensatz_median"]
         salary_quelle = salary_info["quelle"]
     except Exception:
-        stundensatz   = 47.5  # DACH-Fallback DE
+        stundensatz   = 47.5
         salary_quelle = "hardcoded_fallback"
 
-    personalkosten = oh_cache["personalkosten"](dauer_tage, teamgroesse, stundensatz)
+    overhead       = _overhead_faktor(beschreibung, projekttyp)
+    personalkosten = dauer_tage * teamgroesse * stundensatz * STUNDEN_PRO_TAG
+    kosten_base    = personalkosten * overhead
+
+    # Tagespreis-Äquivalent (für Berichtsfelder)
+    tagespreis_p50 = teamgroesse * stundensatz * STUNDEN_PRO_TAG * overhead
+
+    # ----- Schritt 3: Kostenbänder -----
+    # p10 × 0.6 | p25 × 0.8 | p50 × 1.0 | p75 × 1.4 | p90 × 2.0
+    kosten_min      = kosten_base * 0.6
+    kosten_low      = kosten_base * 0.8
+    kosten_expected = kosten_base
+    kosten_high     = kosten_base * 1.4
+    kosten_max      = kosten_base * 2.0
+
+    logger.debug(
+        "[Pipeline] %d Tage × %d Pers. × %.1f €/h × %gh × OH %.1f → %,.0f € [%,.0f – %,.0f €]",
+        round(dauer_tage), round(teamgroesse), stundensatz, STUNDEN_PRO_TAG,
+        overhead, kosten_expected, kosten_low, kosten_high,
+    )
 
     return PipelineErgebnis(
         dauer_tage           = round(dauer_tage, 1),
-        tagespreis_p10       = round(tp["p10"], 2),
-        tagespreis_p25       = round(tp["p25"], 2),
-        tagespreis_p50       = round(tp["p50"], 2),
-        tagespreis_p75       = round(tp["p75"], 2),
-        tagespreis_p90       = round(tp["p90"], 2),
+        tagespreis_p10       = round(tagespreis_p50 * 0.6, 2),
+        tagespreis_p25       = round(tagespreis_p50 * 0.8, 2),
+        tagespreis_p50       = round(tagespreis_p50, 2),
+        tagespreis_p75       = round(tagespreis_p50 * 1.4, 2),
+        tagespreis_p90       = round(tagespreis_p50 * 2.0, 2),
         kosten_min           = round(kosten_min, 2),
         kosten_low           = round(kosten_low, 2),
         kosten_expected      = round(kosten_expected, 2),

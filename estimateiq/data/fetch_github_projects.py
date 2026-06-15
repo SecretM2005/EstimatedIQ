@@ -1,9 +1,10 @@
 """
-GitHub Projects Connector – schätzt Entwicklungsaufwand abgeschlossener IT-Repositories.
+GitHub Projects Connector – extrahiert Entwicklungslaufzeit abgeschlossener IT-Repositories.
 
 Strategie:
   - GitHub Search API: Archivierte Repositories mit IT-Bezug
-  - Aufwandsschätzung: contributors_estimate × aktive_Monate × 20 h × 85 €/h
+  - Laufzeit: dauer_tage = (pushed_at - created_at).days
+  - Filter: 14 < dauer_tage < 730 (plausible Projektdauer)
   - 500 eindeutige Repos aus mehreren thematischen Suchqueries
 
 Authentifizierung (optional, empfohlen):
@@ -24,11 +25,11 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-GITHUB_API_BASE   = "https://api.github.com"
-STUNDENSATZ_DACH  = 85.0    # €/h
-STUNDEN_PRO_MONAT = 20.0    # typischer Open-Source-Beitrag pro Contributor/Monat
-MAX_REPOS         = 500
-PAGE_SIZE         = 100     # GitHub max
+GITHUB_API_BASE = "https://api.github.com"
+MAX_REPOS       = 500
+PAGE_SIZE       = 100     # GitHub max
+DAUER_MIN_TAGE  = 14     # Untergrenze: > 14 Tage (exklusiv)
+DAUER_MAX_TAGE  = 730    # Obergrenze: < 730 Tage (exklusiv)
 
 RAW_DATA_DIR      = Path("data")
 OUTPUT_FILE       = RAW_DATA_DIR / "raw_github_projects.jsonl"
@@ -138,36 +139,15 @@ def _projekttyp_fuer_cpv(cpv: str) -> str:
     return mapping.get(cpv, "Softwareentwicklung")
 
 
-def _berechne_aufwand(repo: dict) -> tuple[float, int | None]:
-    """
-    Schätzt Projektaufwand aus öffentlichen Repository-Metadaten.
-
-    contributors_estimate ≈ sqrt(stargazers) [nicht-linear: 100 Sterne → 10 Contrib.]
-    aktive_monate = (pushed_at - created_at) in Monaten, max. 60
-    effort_h = contributors × monate × 20 h/Monat
-    """
-    stars  = max(1, repo.get("stargazers_count", 1))
-    forks  = repo.get("forks_count", 0)
-    # Contributors-Schätzung aus Stars + Forks
-    contrib_estimate = max(1, int((stars ** 0.45) + (forks ** 0.3)))
-    contrib_estimate = min(contrib_estimate, 80)    # Cap: keine Linux-Kernel-Projekte
-
+def _berechne_dauer(repo: dict) -> int | None:
+    """Berechnet Projektlaufzeit als (pushed_at - created_at).days. Filter: 14 < tage < 730."""
     try:
         created = datetime.fromisoformat(repo["created_at"].replace("Z", "+00:00"))
         pushed  = datetime.fromisoformat(repo["pushed_at"].replace("Z", "+00:00"))
-        monate  = max(1, int((pushed - created).days / 30.44))
+        tage    = (pushed - created).days
     except Exception:
-        monate = 12
-
-    monate = min(monate, 60)     # Max 5 Jahre
-
-    effort_h   = contrib_estimate * monate * STUNDEN_PRO_MONAT
-    budget_eur = round(effort_h * STUNDENSATZ_DACH, 2)
-
-    dauer_tage = monate * 30
-    dauer_tage = dauer_tage if 7 <= dauer_tage <= 3_650 else None
-
-    return budget_eur, dauer_tage
+        return None
+    return tage if DAUER_MIN_TAGE < tage < DAUER_MAX_TAGE else None
 
 
 def _repo_zu_datensatz(repo: dict) -> dict | None:
@@ -201,14 +181,13 @@ def _repo_zu_datensatz(repo: dict) -> dict | None:
     if len(beschreibung) < 30:
         return None
 
-    budget_eur, dauer_tage = _berechne_aufwand(repo)
-    if not (5_000 <= budget_eur <= 500_000_000):
+    dauer_tage = _berechne_dauer(repo)
+    if dauer_tage is None:
         return None
 
     cpv = _cpv_fuer_repo(sprache, topics)
 
     try:
-        pub_date = repo["pushed_at"][:10].replace("-", "") + "0000"[:8 - len(repo["pushed_at"][:10].replace("-", ""))]
         pub_date = repo["pushed_at"][:10].replace("-", "")
     except Exception:
         pub_date = "20200101"
@@ -219,13 +198,14 @@ def _repo_zu_datensatz(repo: dict) -> dict | None:
         "title":             titel,
         "description":       beschreibung,
         "cpv_code":          cpv,
-        "estimated_value":   budget_eur,
+        "estimated_value":   None,
         "currency":          "EUR",
         "country":           "DE",
         "duration_end":      None,
         "dauer_tage_direkt": dauer_tage,
         "notice_type":       "github",
         "datenquelle":       "github",
+        "technologie":       sprache or "",
         "raw":               {},
     }
 

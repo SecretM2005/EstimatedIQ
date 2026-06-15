@@ -107,8 +107,8 @@ def lade_rohdaten(pfad: str | Path | None = None) -> list[dict]:
                     "Bitte zuerst: python -m estimateiq.data.fetch_ted"
                 )
 
-        # Zusatzquellen: PROMISE, GitHub, COSMIC (werden falls vorhanden automatisch geladen)
-        for zusatz_name in ["raw_promise.jsonl", "raw_github_projects.jsonl", "raw_cosmic.jsonl"]:
+        # Zusatzquellen: PROMISE, GitHub, COSMIC, IndieHackers (automatisch geladen wenn vorhanden)
+        for zusatz_name in ["raw_promise.jsonl", "raw_github_projects.jsonl", "raw_cosmic.jsonl", "raw_indiehackers.jsonl"]:
             zusatz_pfad = verzeichnis / zusatz_name
             if zusatz_pfad.exists():
                 pfade.append(zusatz_pfad)
@@ -269,10 +269,22 @@ def _konvertiere_zu_dataframe(datensaetze: list[dict]) -> pd.DataFrame:
             zaehler["text_zu_kurz"] += 1
             continue
 
-        # Laufzeit: direktes Feld (PROMISE/GitHub) hat Vorrang vor Datumsberechnung (TED)
+        # Laufzeit: direktes Feld (PROMISE/GitHub/IndieHackers) hat Vorrang vor Datumsberechnung
         dauer = rec.get("dauer_tage_direkt") or _berechne_dauer(
             rec.get("duration_end"), rec.get("publication_date")
         )
+
+        # Jahr aus Publikationsdatum
+        pub_date_str = str(rec.get("publication_date") or "")
+        try:
+            jahr = int(pub_date_str[:4]) if pub_date_str and pub_date_str[:4].isdigit() else None
+            if jahr and not (2000 <= jahr <= 2030):
+                jahr = None
+        except (ValueError, TypeError):
+            jahr = None
+
+        # Technologie (GitHub-Sprache, COSMIC-Typ, IH-Tags)
+        technologie = (rec.get("technologie") or "").strip() or None
 
         zeilen.append({
             "titel":        titel,
@@ -283,6 +295,8 @@ def _konvertiere_zu_dataframe(datensaetze: list[dict]) -> pd.DataFrame:
             "cpv_code":     cpv_code,
             "projekttyp":   _cpv_zu_projekttyp(cpv_code),
             "datenquelle":  rec.get("datenquelle", "ted"),
+            "technologie":  technologie,
+            "jahr":         jahr,
         })
         zaehler["akzeptiert"] += 1
 
@@ -359,6 +373,8 @@ def _finalisiere_typen(df: pd.DataFrame) -> pd.DataFrame:
     df["land"]        = df["land"].astype("category")
     df["projekttyp"]  = df["projekttyp"].astype("category")
     df["datenquelle"] = df["datenquelle"].astype("category")
+    df["technologie"] = df["technologie"].astype("string")
+    df["jahr"]        = pd.to_numeric(df["jahr"], errors="coerce").astype("Int64")
     logger.info("[Typen] Datentypen finalisiert.")
     return df
 
@@ -483,7 +499,7 @@ def preprocess_pipeline(
     # 5. Speichern
     speichere_ergebnisse(df, ausgabe_verzeichnis)
 
-    logger.info("=== Preprocessing abgeschlossen: %d Zeilen, 8 Spalten ===", len(df))
+    logger.info("=== Preprocessing abgeschlossen: %d Zeilen, 10 Spalten ===", len(df))
     return df
 
 

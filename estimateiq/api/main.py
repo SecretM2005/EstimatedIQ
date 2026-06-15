@@ -65,12 +65,11 @@ class HealthResponse(BaseModel):
 async def lifespan(app: FastAPI):
     logger.info("EstimateIQ API startet – lade Pipeline-Modelle...")
     try:
-        from estimateiq.models.estimate_pipeline import _lade_duration_modell, _lade_overhead_modell
+        from estimateiq.models.estimate_pipeline import _lade_duration_modell
         _lade_duration_modell()
-        _lade_overhead_modell()
-        logger.info("Pipeline-Modelle geladen.")
+        logger.info("Laufzeit-Modell geladen.")
     except FileNotFoundError as exc:
-        logger.warning("Modelle noch nicht trainiert: %s", exc)
+        logger.warning("Modell noch nicht trainiert: %s", exc)
     except Exception as exc:
         logger.warning("Modell-Vorlade fehlgeschlagen: %s", exc)
     yield
@@ -206,8 +205,7 @@ def _confidence_score(ergebnis) -> float:
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health_check():
     from estimateiq.models.duration_model import MODELL_PKL as DUR_PKL
-    from estimateiq.models.overhead_model import MODELL_PKL as OH_PKL
-    pipeline_ok = DUR_PKL.exists() and OH_PKL.exists()
+    pipeline_ok = DUR_PKL.exists()
     return HealthResponse(
         status="ok",
         pipeline_ready=pipeline_ok,
