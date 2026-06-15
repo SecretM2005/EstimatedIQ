@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 BUDGET_MIN_EUR = 5_000        # Ausreißer-Untergrenze
 BUDGET_MAX_EUR = 500_000_000  # Ausreißer-Obergrenze
-DAUER_MIN_TAGE = 7            # Kürzeste sinnvolle Laufzeit
+DAUER_MIN_TAGE = 3            # Kürzeste sinnvolle Laufzeit (kleine Projekte: ab 3 Tagen)
 DAUER_MAX_TAGE = 3_650        # Längste sinnvolle Laufzeit (10 Jahre)
 TITEL_MIN_ZEICHEN = 10
 BESCHREIBUNG_MIN_ZEICHEN = 30

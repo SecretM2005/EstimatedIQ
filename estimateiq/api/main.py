@@ -10,7 +10,7 @@ Endpoint: POST /api/estimate
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import numpy as np
 import pandas as pd
@@ -31,6 +31,13 @@ class EstimateRequest(BaseModel):
     beschreibung: Annotated[str, Field(min_length=10, max_length=10_000,
                                        description="Projektbeschreibung")]
     region: str = Field(default="DE", description="ISO 3166-2 Region (z.B. DE-BY, AT, CH)")
+    projekt_groesse: Literal["klein", "mittel", "gross"] = Field(
+        default="mittel",
+        description=(
+            "Projektgröße: 'klein' (Freelancer/Solo, bis ~3 Monate), "
+            "'mittel' (kleines Team, Standard), 'gross' (Enterprise/Behörde)"
+        ),
+    )
 
 
 class SimilarProject(BaseModel):
@@ -49,6 +56,8 @@ class EstimateResponse(BaseModel):
     confidence_score:  float
     top_risks:         list[str]
     similar_projects:  list[SimilarProject]
+    projekt_groesse:   str = "mittel"
+    teamgroesse:       float = 2.0
 
 
 class HealthResponse(BaseModel):
@@ -226,10 +235,11 @@ async def estimate(req: EstimateRequest):
 
         land = req.region[:2].upper() if req.region else "DE"
         ergebnis = pipeline_estimate(
-            beschreibung = req.beschreibung,
-            land         = land,
-            region       = req.region,
-            datenquelle  = "ted",
+            beschreibung    = req.beschreibung,
+            land            = land,
+            region          = req.region,
+            datenquelle     = "ted",
+            projekt_groesse = req.projekt_groesse,
         )
     except FileNotFoundError as exc:
         raise HTTPException(
@@ -257,4 +267,6 @@ async def estimate(req: EstimateRequest):
         confidence_score = round(konfidenz, 3),
         top_risks        = risiken,
         similar_projects = [SimilarProject(**p) for p in aehnliche],
+        projekt_groesse  = ergebnis.projekt_groesse,
+        teamgroesse      = round(ergebnis.teamgroesse, 1),
     )

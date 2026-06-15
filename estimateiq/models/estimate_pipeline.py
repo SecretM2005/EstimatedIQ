@@ -42,6 +42,19 @@ logger = logging.getLogger(__name__)
 
 STUNDEN_PRO_TAG = 8.0
 
+# Skalierungsfaktoren je Projektgröße
+# "klein": Freelancer/Solo bis ~3 Monate; "mittel": Standardprojekt; "gross": Enterprise
+GROESSE_TEAM_FAKTOR: dict[str, float] = {
+    "klein":  0.40,   # ~1 Person bei Softwareentwicklung-Default (3 × 0.4 = 1.2)
+    "mittel": 1.00,
+    "gross":  1.60,
+}
+GROESSE_DAUER_HINWEIS: dict[str, str] = {
+    "klein":  "⚠ Kleine Projekte werden vom Modell tendenziell überschätzt.",
+    "mittel": "",
+    "gross":  "",
+}
+
 # Overhead-Faktor je Projekttyp (deterministisch, kein ML)
 # Quelle: Destatis Branchenstruktur + Erfahrungswerte DACH IT-Markt
 OVERHEAD_FAKTOREN: dict[str, float] = {
@@ -141,6 +154,7 @@ class PipelineErgebnis:
     projekttyp: str
     cpv_code: str
     stundensatz_quelle: str = ""
+    projekt_groesse: str = "mittel"
 
     # Rückwärtskompatibilität: overhead_faktor_p50 = tagespreis_p50 / (team × stundensatz × 8)
     @property
@@ -166,6 +180,7 @@ class PipelineErgebnis:
             "kosten_max":            round(self.kosten_max, 0),
             "region":                self.region,
             "projekttyp":            self.projekttyp,
+            "projekt_groesse":       self.projekt_groesse,
         }
 
 
@@ -212,17 +227,19 @@ def estimate(
     region: str = "DE",
     datenquelle: str = "ted",
     dauer_override: float | None = None,
+    projekt_groesse: str = "mittel",
 ) -> PipelineErgebnis:
     """
     Schätzt Projektkosten via deterministischer Pipeline.
 
     Args:
-        beschreibung:   Volltext der Ausschreibung (min. 5 Zeichen)
-        cpv_code:       CPV-Code (Optional, Standard: 72200000)
-        land:           2-Buchstaben-Ländercode für Datensatz (DE/AT/CH)
-        region:         ISO 3166-2 für Gehaltssuche (DE, DE-BY, AT, CH, ...)
-        datenquelle:    Herkunft (ted/promise/github)
-        dauer_override: Laufzeit in Tagen falls bekannt (überspringt Stufe 1)
+        beschreibung:    Volltext der Ausschreibung (min. 5 Zeichen)
+        cpv_code:        CPV-Code (Optional, Standard: 72200000)
+        land:            2-Buchstaben-Ländercode für Datensatz (DE/AT/CH)
+        region:          ISO 3166-2 für Gehaltssuche (DE, DE-BY, AT, CH, ...)
+        datenquelle:     Herkunft (ted/promise/github)
+        dauer_override:  Laufzeit in Tagen falls bekannt (überspringt Stufe 1)
+        projekt_groesse: "klein" (Freelancer/Solo), "mittel" (Standard), "gross" (Enterprise)
 
     Returns:
         PipelineErgebnis mit allen Kostenpositionen
@@ -253,7 +270,9 @@ def estimate(
 
     # ----- Schritt 2: Kosten deterministisch berechnen -----
     from estimateiq.models.overhead_model import extract_teamgroesse
-    teamgroesse = extract_teamgroesse(beschreibung, projekttyp)
+    groesse_key    = projekt_groesse if projekt_groesse in GROESSE_TEAM_FAKTOR else "mittel"
+    teamgroesse_basis = extract_teamgroesse(beschreibung, projekttyp)
+    teamgroesse    = max(1.0, teamgroesse_basis * GROESSE_TEAM_FAKTOR[groesse_key])
 
     technologie = _extrahiere_technologie(beschreibung)
 
@@ -306,6 +325,7 @@ def estimate(
         projekttyp           = projekttyp,
         cpv_code             = cpv_str,
         stundensatz_quelle   = salary_quelle,
+        projekt_groesse      = groesse_key,
     )
 
 
@@ -314,6 +334,7 @@ def estimate_batch(
     region_col: str = "land",
     default_region: str = "DE",
     verwende_tatsaechliche_dauer: bool = False,
+    projekt_groesse: str = "mittel",
 ) -> list[PipelineErgebnis]:
     """
     Batch-Schätzung für einen DataFrame.
@@ -323,24 +344,28 @@ def estimate_batch(
         verwende_tatsaechliche_dauer: Falls True, wird dauer_tage aus dem DataFrame
             als dauer_override übergeben (nur für Diagnose/Ablation, nicht für echte Validierung).
             Standard: False — immer Stufe 1 verwenden.
+        projekt_groesse: "klein" / "mittel" / "gross" für alle Zeilen (oder je Zeile aus Spalte).
     """
     ergebnisse = []
     for _, zeile in df.iterrows():
         try:
             region = str(zeile.get(region_col) or default_region)
 
-            # dauer_override nur wenn explizit angefordert
             dauer_ov = None
             if verwende_tatsaechliche_dauer and "dauer_tage" in zeile and pd.notna(zeile["dauer_tage"]):
                 dauer_ov = float(zeile["dauer_tage"])
 
+            # projekt_groesse kann aus Zeile kommen oder als Fallback-Default
+            groesse = str(zeile.get("projekt_groesse") or projekt_groesse)
+
             ergebnis = estimate(
-                beschreibung = str(zeile.get("beschreibung", "")),
-                cpv_code     = zeile.get("cpv_code"),
-                land         = str(zeile.get("land") or "DE"),
-                region       = region,
-                datenquelle  = str(zeile.get("datenquelle") or "ted"),
-                dauer_override = dauer_ov,
+                beschreibung    = str(zeile.get("beschreibung", "")),
+                cpv_code        = zeile.get("cpv_code"),
+                land            = str(zeile.get("land") or "DE"),
+                region          = region,
+                datenquelle     = str(zeile.get("datenquelle") or "ted"),
+                dauer_override  = dauer_ov,
+                projekt_groesse = groesse,
             )
         except Exception as exc:
             logger.warning("[Pipeline Batch] Fehler bei Zeile: %s", exc)

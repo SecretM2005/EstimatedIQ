@@ -90,15 +90,34 @@ _TEAMGROESSE_MUSTER = [
 ]
 _MUSTER_KOMPILIERT = [re.compile(p, re.IGNORECASE) for p in _TEAMGROESSE_MUSTER]
 
+# Solo/Freelancer-Erkennung → gibt immer 1 Person zurück
+_SOLO_MUSTER = re.compile(
+    r"\b("
+    r"solo|allein\w*|freelancer?\w*|freiberuflich\w*|selbständig\w*|"
+    r"einzelperson|1[\s-]person|one[\s-]person|"
+    r"sole\s+developer|indie\s+developer|solo\s+developer|"
+    r"nur\s+ich|als\s+einzelner\w*|als\s+entwicklerin?"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def extract_teamgroesse(beschreibung: str, projekttyp: str = "Softwareentwicklung") -> float:
     """Schätzt Teamgröße via Regex oder Projekttyp-Heuristik. Nur für Reporting."""
+    text = beschreibung or ""
+
+    # Solo/Freelancer-Angaben haben Vorrang
+    if _SOLO_MUSTER.search(text):
+        return 1.0
+
+    # Explizite Teamgröße aus Text extrahieren
     for muster in _MUSTER_KOMPILIERT:
-        treffer = muster.search(beschreibung or "")
+        treffer = muster.search(text)
         if treffer:
             n = int(treffer.group(1))
             if 1 <= n <= 100:
                 return float(n)
+
     return PROJEKTTYP_TEAMGROESSE.get(projekttyp, 2.0)
 
 

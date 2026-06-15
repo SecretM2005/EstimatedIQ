@@ -45,7 +45,7 @@ PLOT_PNG     = MODELL_DIR / "duration_importance.png"
 N_SVD              = 50
 KATEGORIALE        = ["land", "projekttyp", "datenquelle", "technologie"]
 NUMERISCHE         = ["beschreibung_laenge", "beschreibung_wortanzahl", "cpv_num", "jahr"]
-DAUER_MIN_TAGE     = 7
+DAUER_MIN_TAGE     = 3       # Kürzeste vorhersagbare Laufzeit (kleine Projekte)
 DAUER_MAX_TAGE     = 3_650
 
 
