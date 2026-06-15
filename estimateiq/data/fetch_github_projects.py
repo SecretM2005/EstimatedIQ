@@ -29,28 +29,34 @@ GITHUB_API_BASE = "https://api.github.com"
 MAX_REPOS       = 500
 PAGE_SIZE       = 100     # GitHub max
 DAUER_MIN_TAGE  = 14     # Untergrenze: > 14 Tage (exklusiv)
-DAUER_MAX_TAGE  = 730    # Obergrenze: < 730 Tage (exklusiv)
+DAUER_MAX_TAGE  = 365    # Obergrenze: kleine Projekte bis 1 Jahr
+STARS_MIN       = 10     # Zu unbekannte Repos rausfiltern
+STARS_MAX       = 5_000  # Zu populäre (= zu große) Projekte rausfiltern
 
 RAW_DATA_DIR      = Path("data")
 OUTPUT_FILE       = RAW_DATA_DIR / "raw_github_projects.jsonl"
 
-# Thematische Suchqueries – decken verschiedene IT-Bereiche ab
+# Suchqueries für kleine bis mittlere Projekte (webapp, tools, SaaS, mobile)
 SEARCH_QUERIES = [
-    "archived:true topic:enterprise-software stars:20..5000",
-    "archived:true topic:erp stars:20..5000",
-    "archived:true topic:crm stars:20..5000",
-    "archived:true enterprise management language:Java stars:20..2000",
-    "archived:true enterprise management language:Python stars:20..2000",
-    "archived:true business application language:Java stars:20..2000",
-    "archived:true business application language:TypeScript stars:20..2000",
-    "archived:true ERP system language:Java stars:20..2000",
-    "archived:true data analytics platform language:Python stars:30..3000",
-    "archived:true devops infrastructure language:Go stars:30..3000",
-    "archived:true security scanner language:Python stars:30..3000",
-    "archived:true web application framework language:Python stars:50..5000",
-    "archived:true microservices language:Java stars:20..2000",
-    "archived:true content management language:PHP stars:20..2000",
-    "archived:true workflow management language:Java stars:20..2000",
+    # Web-Apps & Dashboards
+    "archived:true topic:webapp stars:10..5000",
+    "archived:true topic:saas stars:10..5000",
+    "archived:true topic:dashboard stars:10..5000",
+    "archived:true topic:portfolio stars:10..5000",
+    # Tools & APIs & Bots
+    "archived:true topic:tool stars:10..5000",
+    "archived:true topic:api stars:10..5000",
+    "archived:true topic:bot stars:10..5000",
+    # Mobile Apps
+    "archived:true topic:mobile-app stars:10..5000",
+    "archived:true topic:ios language:Swift stars:10..2000",
+    "archived:true topic:android language:Kotlin stars:10..2000",
+    # Kleine Business-Systeme
+    "archived:true booking system language:Python stars:10..1000",
+    "archived:true shop ecommerce language:PHP stars:10..2000",
+    "archived:true shop ecommerce language:JavaScript stars:10..2000",
+    "archived:true admin panel crm language:Python stars:10..1000",
+    "archived:true small business management language:JavaScript stars:10..1000",
 ]
 
 # Primärsprache → CPV-Code
@@ -140,7 +146,9 @@ def _projekttyp_fuer_cpv(cpv: str) -> str:
 
 
 def _berechne_dauer(repo: dict) -> int | None:
-    """Berechnet Projektlaufzeit als (pushed_at - created_at).days. Filter: 14 < tage < 730."""
+    """Berechnet Projektlaufzeit als (pushed_at - created_at).days.
+    Filter: DAUER_MIN_TAGE < tage < DAUER_MAX_TAGE (14–365 für kleine Projekte).
+    """
     try:
         created = datetime.fromisoformat(repo["created_at"].replace("Z", "+00:00"))
         pushed  = datetime.fromisoformat(repo["pushed_at"].replace("Z", "+00:00"))
@@ -159,6 +167,10 @@ def _repo_zu_datensatz(repo: dict) -> dict | None:
     stars       = repo.get("stargazers_count", 0)
     forks       = repo.get("forks_count", 0)
     owner       = repo.get("owner", {}).get("login", "unknown")
+
+    # Stars-Filter: zu unbekannte oder zu populäre Repos ausschließen
+    if not (STARS_MIN <= stars <= STARS_MAX):
+        return None
 
     titel = f"GitHub: {name} ({owner})"
     if len(titel) < 10:

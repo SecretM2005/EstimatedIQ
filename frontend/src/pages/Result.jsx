@@ -134,6 +134,35 @@ export default function Result() {
           <p className="text-5xl md:text-6xl font-extrabold text-primary tracking-tight">
             {fmtEUR(displayData.kosten_expected)}
           </p>
+          {/* Kosten-Breakdown: Wie kommt die Zahl zustande? */}
+          {(() => {
+            const team     = displayData.teamgroesse
+            const dauer    = displayData.dauer_tage
+            const personal = displayData.personalkosten
+            const overhead = displayData.overhead_faktor
+            if (!team || !dauer || !personal || !overhead) return null
+            const stundensatz = Math.round(personal / (dauer * team * 8))
+            const monate      = Math.max(1, Math.round(dauer / 30))
+            const teamRund    = Math.max(1, Math.round(team * 2) / 2)
+            const ohPct       = Math.round((overhead - 1) * 100)
+            return (
+              <p className="text-sm text-gray-400 mt-2">
+                ca.{' '}
+                <span className="text-gray-600 font-medium">
+                  {teamRund === 1 ? '1 Entwickler' : `${teamRund} Entwickler`}
+                </span>
+                {' × '}
+                <span className="text-gray-600 font-medium">
+                  {monate === 1 ? '1 Monat' : `${monate} Monate`}
+                </span>
+                {' × '}
+                <span className="text-gray-600 font-medium">{stundensatz} €/h</span>
+                {ohPct > 0 && (
+                  <> + <span className="text-gray-600 font-medium">{ohPct} % Overhead</span></>
+                )}
+              </p>
+            )
+          })()}
         </div>
 
         {/* Cost range bar */}
@@ -232,20 +261,34 @@ export default function Result() {
           </section>
         )}
 
-        {/* Disclaimer */}
-        <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 mb-8 text-sm text-gray-600">
-          <p>
-            Schätzung basiert auf{' '}
-            <strong className="text-primary">EU-Ausschreibungen aus dem TED-Portal</strong>.{' '}
-            Konfidenz:{' '}
-            <strong className={confidence.color}>{confidence.text}</strong>
-            {displayData.confidence_score != null
-              ? ` (${Math.round(displayData.confidence_score * 100)}%)`
-              : ''}
-          </p>
-          <p className="mt-1 text-xs text-gray-400">
-            Diese Schätzung dient als Orientierungswert. Individuelle Faktoren können stark abweichen.
-          </p>
+        {/* Disclaimer – prominent & ehrlich */}
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-8">
+          <div className="flex gap-3">
+            <span className="text-amber-500 text-lg shrink-0 mt-0.5">⚠</span>
+            <div>
+              <p className="text-sm font-semibold text-amber-800 mb-1">
+                Wichtige Hinweise zur Schätzgenauigkeit
+              </p>
+              <ul className="text-sm text-amber-700 space-y-1 list-disc list-inside">
+                <li>
+                  Basis sind <strong>öffentliche EU-Ausschreibungen (TED-Portal)</strong> – typischerweise
+                  große Behördenprojekte. Kleine Projekte unter ~50.000 € werden aktuell
+                  <strong> systematisch überschätzt</strong>.
+                </li>
+                <li>
+                  Konfidenz dieser Schätzung:{' '}
+                  <strong className={confidence.color}>{confidence.text}</strong>
+                  {displayData.confidence_score != null
+                    ? ` (${Math.round(displayData.confidence_score * 100)} %)`
+                    : ''}
+                  {' '}– Kostenspanne Min/Max zeigt die Unsicherheit.
+                </li>
+                <li>
+                  Genauigkeit verbessert sich mit euren eigenen abgeschlossenen Projektdaten.
+                </li>
+              </ul>
+            </div>
+          </div>
         </div>
 
         {/* Actions */}
