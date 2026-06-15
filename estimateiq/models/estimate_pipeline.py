@@ -149,6 +149,10 @@ class PipelineErgebnis:
     stundensatz_eur_h: float
     personalkosten: float
 
+    # Teamvergleich (nur wenn verfuegbare_teamgroesse übergeben wurde)
+    teamgroesse_modell: float  = 0.0    # was das Modell ohne Override empfiehlt
+    team_assessment:    str | None = None  # "passend" | "zu_klein" | "zu_gross"
+
     # Metadaten
     region: str
     projekttyp: str
@@ -171,6 +175,8 @@ class PipelineErgebnis:
             "tagespreis_p50":        round(self.tagespreis_p50, 0),
             "tagespreis_p75":        round(self.tagespreis_p75, 0),
             "teamgroesse":           round(self.teamgroesse, 1),
+            "teamgroesse_modell":    round(self.teamgroesse_modell or self.teamgroesse, 1),
+            "team_assessment":       self.team_assessment,
             "stundensatz_eur_h":     round(self.stundensatz_eur_h, 1),
             "personalkosten":        round(self.personalkosten, 0),
             "kosten_min":            round(self.kosten_min, 0),
@@ -228,6 +234,7 @@ def estimate(
     datenquelle: str = "ted",
     dauer_override: float | None = None,
     projekt_groesse: str = "mittel",
+    teamgroesse_override: float | None = None,
 ) -> PipelineErgebnis:
     """
     Schätzt Projektkosten via deterministischer Pipeline.
@@ -238,8 +245,9 @@ def estimate(
         land:            2-Buchstaben-Ländercode für Datensatz (DE/AT/CH)
         region:          ISO 3166-2 für Gehaltssuche (DE, DE-BY, AT, CH, ...)
         datenquelle:     Herkunft (ted/promise/github)
-        dauer_override:  Laufzeit in Tagen falls bekannt (überspringt Stufe 1)
-        projekt_groesse: "klein" (Freelancer/Solo), "mittel" (Standard), "gross" (Enterprise)
+        dauer_override:          Laufzeit in Tagen falls bekannt (überspringt Stufe 1)
+        projekt_groesse:         "klein" (Freelancer/Solo), "mittel" (Standard), "gross" (Enterprise)
+        teamgroesse_override:    Verfügbare Teamgröße in Personen; löst Assessment aus wenn gesetzt
 
     Returns:
         PipelineErgebnis mit allen Kostenpositionen
@@ -270,9 +278,22 @@ def estimate(
 
     # ----- Schritt 2: Kosten deterministisch berechnen -----
     from estimateiq.models.overhead_model import extract_teamgroesse
-    groesse_key    = projekt_groesse if projekt_groesse in GROESSE_TEAM_FAKTOR else "mittel"
+    groesse_key       = projekt_groesse if projekt_groesse in GROESSE_TEAM_FAKTOR else "mittel"
     teamgroesse_basis = extract_teamgroesse(beschreibung, projekttyp)
-    teamgroesse    = max(1.0, teamgroesse_basis * GROESSE_TEAM_FAKTOR[groesse_key])
+    teamgroesse_modell = max(1.0, teamgroesse_basis * GROESSE_TEAM_FAKTOR[groesse_key])
+
+    # Nutzer-Override: tatsächlich verfügbares Team
+    if teamgroesse_override is not None and teamgroesse_override > 0:
+        teamgroesse = float(teamgroesse_override)
+        ratio = teamgroesse / teamgroesse_modell
+        team_assessment: str | None = (
+            "zu_gross" if ratio >= 1.5  else
+            "zu_klein" if ratio <= 0.65 else
+            "passend"
+        )
+    else:
+        teamgroesse     = teamgroesse_modell
+        team_assessment = None
 
     technologie = _extrahiere_technologie(beschreibung)
 
@@ -326,6 +347,8 @@ def estimate(
         cpv_code             = cpv_str,
         stundensatz_quelle   = salary_quelle,
         projekt_groesse      = groesse_key,
+        teamgroesse_modell   = round(teamgroesse_modell, 1),
+        team_assessment      = team_assessment,
     )
 
 

@@ -1,12 +1,12 @@
 import axios from 'axios'
 
-export async function getEstimate(beschreibung, region) {
+export async function getEstimate(beschreibung, region, verfuegbare_teamgroesse = null, projekt_groesse = 'mittel') {
+  const body = { beschreibung, region, projekt_groesse }
+  if (verfuegbare_teamgroesse != null && Number(verfuegbare_teamgroesse) >= 1) {
+    body.verfuegbare_teamgroesse = Number(verfuegbare_teamgroesse)
+  }
   try {
-    const response = await axios.post(
-      '/api/estimate',
-      { beschreibung, region },
-      { timeout: 30_000 }
-    )
+    const response = await axios.post('/api/estimate', body, { timeout: 30_000 })
     return response.data
   } catch (err) {
     if (!err.response) {

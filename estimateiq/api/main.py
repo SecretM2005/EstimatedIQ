@@ -38,6 +38,12 @@ class EstimateRequest(BaseModel):
             "'mittel' (kleines Team, Standard), 'gross' (Enterprise/Behörde)"
         ),
     )
+    verfuegbare_teamgroesse: float | None = Field(
+        default=None,
+        ge=1, le=200,
+        description="Tatsächlich verfügbares Team in Personen (optional). "
+                    "Löst Assessment 'zu_klein'/'passend'/'zu_gross' aus.",
+    )
 
 
 class SimilarProject(BaseModel):
@@ -47,17 +53,19 @@ class SimilarProject(BaseModel):
 
 
 class EstimateResponse(BaseModel):
-    dauer_tage:        float
-    personalkosten:    float
-    kosten_min:        float
-    kosten_expected:   float
-    kosten_max:        float
-    overhead_faktor:   float
-    confidence_score:  float
-    top_risks:         list[str]
-    similar_projects:  list[SimilarProject]
-    projekt_groesse:   str = "mittel"
-    teamgroesse:       float = 2.0
+    dauer_tage:          float
+    personalkosten:      float
+    kosten_min:          float
+    kosten_expected:     float
+    kosten_max:          float
+    overhead_faktor:     float
+    confidence_score:    float
+    top_risks:           list[str]
+    similar_projects:    list[SimilarProject]
+    projekt_groesse:     str   = "mittel"
+    teamgroesse:         float = 2.0
+    teamgroesse_modell:  float = 2.0
+    team_assessment:     str | None = None
 
 
 class HealthResponse(BaseModel):
@@ -235,11 +243,12 @@ async def estimate(req: EstimateRequest):
 
         land = req.region[:2].upper() if req.region else "DE"
         ergebnis = pipeline_estimate(
-            beschreibung    = req.beschreibung,
-            land            = land,
-            region          = req.region,
-            datenquelle     = "ted",
-            projekt_groesse = req.projekt_groesse,
+            beschreibung          = req.beschreibung,
+            land                  = land,
+            region                = req.region,
+            datenquelle           = "ted",
+            projekt_groesse       = req.projekt_groesse,
+            teamgroesse_override  = req.verfuegbare_teamgroesse,
         )
     except FileNotFoundError as exc:
         raise HTTPException(
@@ -267,6 +276,8 @@ async def estimate(req: EstimateRequest):
         confidence_score = round(konfidenz, 3),
         top_risks        = risiken,
         similar_projects = [SimilarProject(**p) for p in aehnliche],
-        projekt_groesse  = ergebnis.projekt_groesse,
-        teamgroesse      = round(ergebnis.teamgroesse, 1),
+        projekt_groesse     = ergebnis.projekt_groesse,
+        teamgroesse         = round(ergebnis.teamgroesse, 1),
+        teamgroesse_modell  = round(ergebnis.teamgroesse_modell or ergebnis.teamgroesse, 1),
+        team_assessment     = ergebnis.team_assessment,
     )

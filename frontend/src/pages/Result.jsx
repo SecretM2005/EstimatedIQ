@@ -23,15 +23,26 @@ function confidenceLabel(score) {
   return               { text: 'Hohe Konfidenz',      color: 'text-green-600'  }
 }
 
+// Assessment-Konfiguration
+const ASSESSMENT = {
+  zu_klein: { label: 'Team zu klein',  cls: 'bg-red-50 text-red-600 border-red-200'       },
+  passend:  { label: 'Team passend',   cls: 'bg-green-50 text-green-700 border-green-200'  },
+  zu_gross: { label: 'Team zu groß',   cls: 'bg-yellow-50 text-yellow-700 border-yellow-200' },
+}
+
 // Fallback mock data for when backend is not running
 const MOCK = {
-  dauer_tage:        210,
-  personalkosten:    189_000,
-  kosten_min:        420_000,
-  kosten_expected:   840_000,
-  kosten_max:      2_100_000,
-  overhead_faktor:     1.8,
-  confidence_score:    0.62,
+  dauer_tage:         210,
+  personalkosten:     189_000,
+  kosten_min:         420_000,
+  kosten_expected:    840_000,
+  kosten_max:       2_100_000,
+  overhead_faktor:      1.8,
+  confidence_score:     0.62,
+  teamgroesse:          3,
+  teamgroesse_modell:   3,
+  team_assessment:      null,
+  projekt_groesse:     'mittel',
   top_risks: [
     'SAP-Schnittstellenkomplexität kann Integrationsdauer um 30–50% verlängern.',
     'Nutzerverwaltung für 200 MA erfordert Sicherheits-Audit (DSGVO/NIS2).',
@@ -52,8 +63,10 @@ export default function Result() {
   const [loading, setLoading] = useState(true)
   const [error,   setError]   = useState(null)
 
-  const beschreibung = state?.beschreibung ?? ''
-  const region       = state?.region       ?? 'DE'
+  const beschreibung   = state?.beschreibung   ?? ''
+  const region         = state?.region         ?? 'DE'
+  const projektGroesse = state?.projektGroesse ?? 'mittel'
+  const teamgroesse    = state?.teamgroesse    ?? null
 
   useEffect(() => {
     if (!beschreibung) {
@@ -63,7 +76,7 @@ export default function Result() {
     let cancelled = false
     ;(async () => {
       try {
-        const result = await getEstimate(beschreibung, region)
+        const result = await getEstimate(beschreibung, region, teamgroesse, projektGroesse)
         if (!cancelled) setData(result)
       } catch (err) {
         if (!cancelled) setError(err.message)
@@ -132,8 +145,10 @@ export default function Result() {
           />
         </div>
 
-        {/* Duration + overhead chips */}
+        {/* Duration + Team + overhead chips */}
         <div className="flex flex-wrap gap-3 mb-8">
+
+          {/* Laufzeit */}
           <div className="bg-white border border-gray-100 rounded-lg px-4 py-3 shadow-sm flex items-center gap-2">
             <span className="text-xl">⏱</span>
             <div>
@@ -141,13 +156,43 @@ export default function Result() {
               <p className="font-bold text-ink">{fmtDauer(displayData.dauer_tage)}</p>
             </div>
           </div>
+
+          {/* Team-Chip mit Assessment */}
           <div className="bg-white border border-gray-100 rounded-lg px-4 py-3 shadow-sm flex items-center gap-2">
             <span className="text-xl">👥</span>
+            <div>
+              <p className="text-xs text-gray-400 font-medium">Team</p>
+              <p className="font-bold text-ink">
+                {displayData.teamgroesse ?? '–'} Pers.
+              </p>
+              {displayData.team_assessment && (() => {
+                const a = ASSESSMENT[displayData.team_assessment]
+                return (
+                  <div className="mt-1">
+                    <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full border ${a.cls}`}>
+                      {a.label}
+                    </span>
+                    {displayData.team_assessment !== 'passend' && (
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        Empfehlung: {displayData.teamgroesse_modell} Pers.
+                      </p>
+                    )}
+                  </div>
+                )
+              })()}
+            </div>
+          </div>
+
+          {/* Personalkosten */}
+          <div className="bg-white border border-gray-100 rounded-lg px-4 py-3 shadow-sm flex items-center gap-2">
+            <span className="text-xl">💰</span>
             <div>
               <p className="text-xs text-gray-400 font-medium">Personalkosten</p>
               <p className="font-bold text-ink">{fmtEUR(displayData.personalkosten)}</p>
             </div>
           </div>
+
+          {/* Overhead */}
           {displayData.overhead_faktor != null && (
             <div className="bg-white border border-gray-100 rounded-lg px-4 py-3 shadow-sm flex items-center gap-2">
               <span className="text-xl">📊</span>
