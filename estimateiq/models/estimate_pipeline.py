@@ -105,6 +105,14 @@ def _cpv_zu_projekttyp(cpv_code: str | int | None) -> str:
     return "Softwareentwicklung"
 
 
+def _team_effizienz(n: float) -> float:
+    """Effektive Produktivität pro Person bei Teamgröße n.
+    Modelliert Koordinationsaufwand und nicht parallelisierbare Aufgaben (Brooks's Law).
+    n=1: 100 %, n=2: 95 %, n=5: 83 %, n=10: 69 %
+    """
+    return max(0.40, 1.0 / (1.0 + 0.05 * max(0.0, n - 1.0)))
+
+
 def _overhead_faktor(beschreibung: str, projekttyp: str) -> float:
     """Bestimmt Overhead-Faktor aus Projekttyp mit SAP/Mobile-Keyword-Vorrang."""
     text = (beschreibung or "").lower()
@@ -157,14 +165,14 @@ class PipelineErgebnis:
     stundensatz_eur_h: float
     personalkosten: float
 
-    # Teamvergleich (nur wenn verfuegbare_teamgroesse übergeben wurde)
-    teamgroesse_modell: float  = 0.0    # was das Modell ohne Override empfiehlt
-    team_assessment:    str | None = None  # "passend" | "zu_klein" | "zu_gross"
-
-    # Metadaten
+    # Metadaten (keine Defaults)
     region: str
     projekttyp: str
     cpv_code: str
+
+    # Felder mit Defaults müssen ans Ende
+    teamgroesse_modell: float  = 0.0    # was das Modell ohne Override empfiehlt
+    team_assessment:    str | None = None  # "passend" | "zu_klein" | "zu_gross"
     stundensatz_quelle: str = ""
     projekt_groesse: str = "mittel"
 
@@ -268,10 +276,11 @@ def estimate(
     land_upper = (land or "DE").upper()[:2]
     groesse_key = projekt_groesse if projekt_groesse in GROESSE_TEAM_FAKTOR else "mittel"
 
-    # ----- Schritt 1: Laufzeit (ML) -----
+    # ----- Schritt 1: Gesamtaufwand schätzen (Personentage) -----
+    # Das ML-Modell liefert eine Laufzeit auf TED-Skala; kalibriert ergibt das
+    # den Gesamtaufwand in Personentagen für den Privatmarkt.
     if dauer_override is not None:
-        dauer_tage = float(dauer_override)
-        logger.debug("[Pipeline] Laufzeit (überschrieben): %d Tage", round(dauer_tage))
+        effort_tage = None  # wird nach Teamgröße gesetzt (Laufzeit ist fest)
     else:
         dur_cache = _lade_duration_modell()
         df_dur = pd.DataFrame([{
@@ -281,18 +290,15 @@ def estimate(
             "projekttyp":   projekttyp,
             "datenquelle":  datenquelle,
         }])
-        pred       = dur_cache["predict"](df_dur)
-        dauer_tage = float(pred[0])
-        # TED-Kalibrierung: Ausschreibungslaufzeit → Privatmarkt-Entwicklungszeit
-        dauer_tage = max(3.0, dauer_tage * DAUER_KALIBRIERUNG.get(groesse_key, 0.45))
-        logger.debug("[Pipeline] Laufzeit geschätzt (kalibriert): %d Tage", round(dauer_tage))
+        pred        = dur_cache["predict"](df_dur)
+        effort_tage = max(3.0, float(pred[0]) * DAUER_KALIBRIERUNG.get(groesse_key, 0.45))
+        logger.debug("[Pipeline] Gesamtaufwand (kalibriert): %d Personentage", round(effort_tage))
 
-    # ----- Schritt 2: Kosten deterministisch berechnen -----
+    # ----- Schritt 2: Team & Effizienz -----
     from estimateiq.models.overhead_model import extract_teamgroesse
-    teamgroesse_basis = extract_teamgroesse(beschreibung, projekttyp)
+    teamgroesse_basis  = extract_teamgroesse(beschreibung, projekttyp)
     teamgroesse_modell = max(1.0, teamgroesse_basis * GROESSE_TEAM_FAKTOR[groesse_key])
 
-    # Nutzer-Override: tatsächlich verfügbares Team
     if teamgroesse_override is not None and teamgroesse_override > 0:
         teamgroesse = float(teamgroesse_override)
         ratio = teamgroesse / teamgroesse_modell
@@ -304,6 +310,21 @@ def estimate(
     else:
         teamgroesse     = teamgroesse_modell
         team_assessment = None
+
+    # ----- Schritt 3: Laufzeit aus Aufwand und Teameffizienz ableiten -----
+    # dauer = effort / (n × effizienz(n))
+    # effizienz(n) < 1: Koordinationsaufwand, nicht-parallele Aufgaben, Ramp-up.
+    if effort_tage is None:
+        # dauer_override: Laufzeit fest, Aufwand ergibt sich
+        dauer_tage  = float(dauer_override)  # type: ignore[arg-type]
+    else:
+        effizienz_kapazitaet = teamgroesse * _team_effizienz(teamgroesse)
+        dauer_tage = max(3.0, effort_tage / effizienz_kapazitaet)
+        logger.debug(
+            "[Pipeline] Laufzeit: %.0f Tage (Aufwand %d × %.1f Pers. × eff %.2f = %.1f Kap.)",
+            dauer_tage, round(effort_tage), teamgroesse,
+            _team_effizienz(teamgroesse), effizienz_kapazitaet,
+        )
 
     technologie = _extrahiere_technologie(beschreibung)
 
