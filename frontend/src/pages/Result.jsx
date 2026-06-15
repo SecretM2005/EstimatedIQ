@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { getEstimate } from '../api/estimate'
 import CostBar from '../components/CostBar'
 import RiskCard from '../components/RiskCard'
@@ -123,13 +123,18 @@ export default function Result() {
           </div>
           <span className="font-bold text-primary text-lg tracking-tight">EstimateIQ</span>
         </div>
-        <button
-          onClick={() => navigate('/')}
-          className="btn-secondary text-sm py-2 no-print"
-        >
-          <ArrowLeftIcon />
-          Neue Schätzung
-        </button>
+        <div className="flex items-center gap-2 no-print">
+          <Link to="/upload" className="btn-secondary text-sm py-2">
+            Daten hochladen
+          </Link>
+          <button
+            onClick={() => navigate('/')}
+            className="btn-secondary text-sm py-2"
+          >
+            <ArrowLeftIcon />
+            Neue Schätzung
+          </button>
+        </div>
       </header>
 
       {/* API error banner */}

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 
 const REGIONS = [
   { value: 'DE-HH', label: 'DE-Nord',     hint: 'Hamburg, Berlin'    },
@@ -116,11 +116,16 @@ export default function Landing() {
   return (
     <div className="min-h-screen bg-light flex flex-col">
       {/* Nav */}
-      <header className="px-6 py-5 flex items-center gap-3 border-b border-slate-100">
-        <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-          <span className="text-white font-bold text-sm">IQ</span>
+      <header className="px-6 py-5 flex items-center justify-between border-b border-slate-100">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
+            <span className="text-white font-bold text-sm">IQ</span>
+          </div>
+          <span className="font-bold text-primary text-lg tracking-tight">EstimateIQ</span>
         </div>
-        <span className="font-bold text-primary text-lg tracking-tight">EstimateIQ</span>
+        <Link to="/upload" className="btn-secondary text-sm py-2">
+          Daten hochladen
+        </Link>
       </header>
 
       <main className="flex-1 flex flex-col items-center justify-center px-4 py-12">

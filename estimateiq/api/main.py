@@ -1,27 +1,58 @@
 """
 EstimateIQ FastAPI – zweistufige Kostenschätzungs-Pipeline.
 
-Endpoint: POST /api/estimate
-  Body:     { beschreibung: str, region: str }
-  Response: { dauer_tage, personalkosten, kosten_min/expected/max,
-              overhead_faktor, confidence_score, top_risks, similar_projects }
+Endpoints:
+  POST /api/estimate             – ML-Projektschätzung
+  POST /api/upload-training-data – Eigene Projektdaten hochladen
+  POST /api/retrain              – Modell nach Upload neu trainieren
+  GET  /api/retrain/status       – Retrain-Fortschritt pollen
+  GET  /api/download-template    – CSV-Vorlage herunterladen
 """
 
+import asyncio
+import io
+import json
 import logging
+import sys
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Literal
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-DATA_PATH = Path("data/processed/notices.parquet")
+DATA_PATH        = Path("data/processed/notices.parquet")
+USER_DATA_FILE   = Path("data/raw_user_uploads.jsonl")
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+_executor        = ThreadPoolExecutor(max_workers=1)
+
+# Retrain-Status (in-memory, genug für Single-Worker-Deployment)
+_retrain_state: dict = {"status": "idle", "mdape": None, "n": None, "error": None}
+
+# Flexible Spalten-Erkennung (case-insensitiv)
+_SPALTEN_KANDIDATEN: dict[str, list[str]] = {
+    "beschreibung": ["beschreibung", "description", "projekt", "projektname",
+                     "title", "name", "projektbeschreibung", "aufgabe"],
+    "dauer_tage":   ["dauer_tage", "duration", "laufzeit", "days", "dauer",
+                     "tage", "laufzeit_tage", "projekttage"],
+    "region":       ["region", "standort", "location", "ort", "bundesland", "land"],
+    "technologie":  ["technologie", "technology", "stack", "tech", "sprache", "language"],
+    "projekttyp":   ["projekttyp", "type", "kategorie", "typ", "art", "project_type"],
+    "teamgroesse":  ["teamgroesse", "team", "mitarbeiter", "teamgröße",
+                     "team_size", "team_groesse", "personen"],
+    "jahr":         ["jahr", "year", "datum", "date", "abschluss"],
+    "kosten":       ["kosten", "budget", "cost", "preis", "budget_eur", "preis_eur", "betrag"],
+}
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -280,4 +311,281 @@ async def estimate(req: EstimateRequest):
         teamgroesse         = round(ergebnis.teamgroesse, 1),
         teamgroesse_modell  = round(ergebnis.teamgroesse_modell or ergebnis.teamgroesse, 1),
         team_assessment     = ergebnis.team_assessment,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Upload-Hilfsfunktionen
+# ---------------------------------------------------------------------------
+
+def _erkenne_spalten(df_cols: list[str]) -> tuple[dict[str, str], dict[str, str | None]]:
+    """
+    Mappt DataFrame-Spalten auf interne Namen.
+    Gibt (erkannte_map, alle_felder_mit_quelle) zurück.
+    erkannte_map: { interner_name: original_spaltenname }
+    """
+    cols_lower = {c.lower().strip(): c for c in df_cols}
+    erkannt: dict[str, str] = {}
+
+    for intern, kandidaten in _SPALTEN_KANDIDATEN.items():
+        for kand in kandidaten:
+            if kand in cols_lower:
+                erkannt[intern] = cols_lower[kand]
+                break
+
+    return erkannt
+
+
+def _parse_dauer(val) -> int | None:
+    try:
+        n = int(float(str(val).replace(",", ".")))
+        return n if 7 <= n <= 730 else None
+    except Exception:
+        return None
+
+
+def _parse_zahl(val) -> float | None:
+    try:
+        return float(str(val).replace(",", "."))
+    except Exception:
+        return None
+
+
+def _zeile_zu_datensatz(
+    row: pd.Series,
+    spalten: dict[str, str],
+    upload_id: str,
+    timestamp: str,
+) -> tuple[dict | None, str | None]:
+    """Konvertiert eine DataFrame-Zeile zu einem JSONL-Datensatz.
+    Gibt (datensatz, fehlergrund) zurück."""
+
+    beschreibung = str(row.get(spalten["beschreibung"], "") or "").strip()
+    if len(beschreibung) < 20:
+        return None, "beschreibung_zu_kurz"
+
+    dauer_raw = row.get(spalten.get("dauer_tage", ""), None) if "dauer_tage" in spalten else None
+    dauer_tage = _parse_dauer(dauer_raw)
+    if dauer_tage is None:
+        return None, "dauer_ausserhalb_bereich"
+
+    region = str(row.get(spalten.get("region", ""), "") or "DE").strip() or "DE"
+    technologie = str(row.get(spalten.get("technologie", ""), "") or "").strip() or None
+    projekttyp  = str(row.get(spalten.get("projekttyp", ""), "") or "").strip() or None
+    jahr_raw    = row.get(spalten.get("jahr", ""), None) if "jahr" in spalten else None
+    kosten_raw  = row.get(spalten.get("kosten", ""), None) if "kosten" in spalten else None
+
+    jahr   = _parse_zahl(jahr_raw) if jahr_raw is not None else None
+    kosten = _parse_zahl(kosten_raw) if kosten_raw is not None else None
+
+    pub_date = f"{int(jahr)}0101" if jahr else timestamp[:8].replace("-", "")
+
+    datensatz = {
+        "document_id":       f"upload_{upload_id}_{uuid.uuid4().hex[:8]}",
+        "publication_date":  pub_date,
+        "title":             beschreibung[:100],
+        "description":       beschreibung,
+        "cpv_code":          "72200000",
+        "estimated_value":   kosten,
+        "currency":          "EUR",
+        "country":           region[:2].upper() if region else "DE",
+        "duration_end":      None,
+        "dauer_tage_direkt": dauer_tage,
+        "notice_type":       "user_upload",
+        "datenquelle":       "user_upload",
+        "technologie":       technologie,
+        "upload_timestamp":  timestamp,
+        "upload_id":         upload_id,
+        "projekttyp_text":   projekttyp,
+        "raw":               {},
+    }
+    return datensatz, None
+
+
+# ---------------------------------------------------------------------------
+# Upload-Endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/api/upload-training-data", tags=["Daten-Upload"])
+async def upload_training_data(file: UploadFile = File(...)):
+    """
+    Lädt eigene historische Projektdaten als CSV oder Excel hoch.
+    Pflichtfelder: Beschreibung + Laufzeit in Tagen.
+    """
+    # Dateityp prüfen
+    erlaubt = {".csv", ".xlsx", ".xls"}
+    suffix  = Path(file.filename or "").suffix.lower()
+    if suffix not in erlaubt:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Nur CSV und Excel erlaubt. Hochgeladen: {suffix or 'unbekannt'}"
+        )
+
+    # Größe prüfen
+    inhalt = await file.read()
+    if len(inhalt) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Datei zu groß ({len(inhalt) // 1024 // 1024} MB). Maximum: 10 MB"
+        )
+
+    # Parsen
+    try:
+        if suffix == ".csv":
+            df = pd.read_csv(io.BytesIO(inhalt), dtype=str)
+        else:
+            df = pd.read_excel(io.BytesIO(inhalt), dtype=str)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Datei konnte nicht geparst werden: {exc}")
+
+    if df.empty:
+        raise HTTPException(status_code=422, detail="Datei ist leer.")
+
+    # Pflichtfelder prüfen
+    spalten = _erkenne_spalten(list(df.columns))
+    fehlend = [f for f in ("beschreibung", "dauer_tage") if f not in spalten]
+    if fehlend:
+        verfuegbare = ", ".join(f'"{c}"' for c in df.columns[:10])
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Pflichtfelder nicht gefunden: {fehlend}. "
+                f"Verfügbare Spalten: {verfuegbare}. "
+                "Erwartete Namen z.B.: beschreibung, dauer_tage, laufzeit, duration"
+            )
+        )
+
+    # Zeilenweise verarbeiten
+    upload_id  = str(uuid.uuid4())
+    timestamp  = datetime.now(timezone.utc).isoformat()
+    datensaetze: list[dict] = []
+    verworfene_gruende: dict[str, int] = {}
+    vorschau: list[dict] = []
+
+    for _, row in df.iterrows():
+        ds, grund = _zeile_zu_datensatz(row, spalten, upload_id, timestamp)
+        if ds is None:
+            verworfene_gruende[grund] = verworfene_gruende.get(grund, 0) + 1
+        else:
+            datensaetze.append(ds)
+            if len(vorschau) < 3:
+                vorschau.append({
+                    "beschreibung": ds["description"][:80],
+                    "dauer_tage":   ds["dauer_tage_direkt"],
+                    "region":       ds["country"],
+                })
+
+    if not datensaetze:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Keine gültigen Zeilen gefunden. "
+                "Prüfe: Beschreibung ≥ 20 Zeichen, Laufzeit zwischen 7 und 730 Tagen."
+            )
+        )
+
+    # An JSONL anhängen
+    USER_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with USER_DATA_FILE.open("a", encoding="utf-8") as f:
+        for ds in datensaetze:
+            f.write(json.dumps(ds, ensure_ascii=False) + "\n")
+
+    logger.info(
+        "[Upload] %d/%d Zeilen akzeptiert → %s (upload_id=%s)",
+        len(datensaetze), len(df), USER_DATA_FILE, upload_id
+    )
+
+    return {
+        "success":   True,
+        "upload_id": upload_id,
+        "stats": {
+            "zeilen_gesamt":      len(df),
+            "zeilen_akzeptiert":  len(datensaetze),
+            "zeilen_verworfen":   len(df) - len(datensaetze),
+            "spalten_erkannt":    {intern: orig for intern, orig in spalten.items()},
+            "verworfene_gruende": verworfene_gruende,
+        },
+        "vorschau": vorschau,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Retrain-Endpoints
+# ---------------------------------------------------------------------------
+
+def _do_retrain() -> dict:
+    """Läuft im ThreadPoolExecutor – blockiert den Worker-Thread."""
+    import subprocess
+
+    subprocess.run(
+        [sys.executable, "-m", "estimateiq.data.preprocess"],
+        check=True, timeout=180, capture_output=True,
+    )
+    subprocess.run(
+        [sys.executable, "train.py", "--only", "duration"],
+        check=True, timeout=600, capture_output=True,
+    )
+
+    # MdAPE aus evaluate.py ermitteln
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    import importlib
+    evaluate_mod = importlib.import_module("evaluate")
+    importlib.reload(evaluate_mod)
+    metrics = evaluate_mod.evaluate()
+
+    df  = pd.read_parquet(DATA_PATH)
+    return {
+        "mdape": round(metrics["mdape"] / 100, 4),
+        "n":     len(df),
+    }
+
+
+@app.post("/api/retrain", tags=["Daten-Upload"])
+async def retrain():
+    """Startet Preprocessing + Duration-Modell-Training im Hintergrund."""
+    global _retrain_state
+    if _retrain_state["status"] == "running":
+        raise HTTPException(status_code=409, detail="Retrain läuft bereits.")
+
+    _retrain_state = {"status": "running", "mdape": None, "n": None, "error": None}
+
+    async def _run():
+        global _retrain_state
+        try:
+            loop   = asyncio.get_event_loop()
+            result = await loop.run_in_executor(_executor, _do_retrain)
+            _retrain_state = {"status": "done", "error": None, **result}
+        except Exception as exc:
+            logger.exception("Retrain fehlgeschlagen: %s", exc)
+            _retrain_state = {"status": "error", "mdape": None, "n": None, "error": str(exc)}
+
+    asyncio.create_task(_run())
+    return {"status": "started"}
+
+
+@app.get("/api/retrain/status", tags=["Daten-Upload"])
+async def retrain_status():
+    """Gibt den aktuellen Retrain-Status zurück (für Polling)."""
+    return _retrain_state
+
+
+# ---------------------------------------------------------------------------
+# CSV-Vorlage
+# ---------------------------------------------------------------------------
+
+CSV_TEMPLATE = (
+    "beschreibung,dauer_tage,region,technologie,teamgroesse,jahr\n"
+    '"React Dashboard mit REST API und PostgreSQL-Datenbank",90,DE-BY,React,2,2024\n'
+    '"iOS App für Außendienst mit Offline-Synchronisation",120,AT,Mobile,3,2023\n'
+    '"WooCommerce-Shop mit Stripe-Zahlungsanbindung",45,CH,PHP,1,2024\n'
+)
+
+
+@app.get("/api/download-template", tags=["Daten-Upload"])
+async def download_template():
+    """Gibt eine CSV-Vorlage zum Ausfüllen zurück."""
+    return StreamingResponse(
+        io.BytesIO(CSV_TEMPLATE.encode("utf-8-sig")),  # utf-8-sig für Excel-Kompatibilität
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="estimateiq_vorlage.csv"'},
     )
