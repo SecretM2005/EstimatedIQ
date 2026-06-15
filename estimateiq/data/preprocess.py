@@ -107,8 +107,8 @@ def lade_rohdaten(pfad: str | Path | None = None) -> list[dict]:
                     "Bitte zuerst: python -m estimateiq.data.fetch_ted"
                 )
 
-        # Zusatzquellen: PROMISE und GitHub (werden falls vorhanden automatisch geladen)
-        for zusatz_name in ["raw_promise.jsonl", "raw_github_projects.jsonl"]:
+        # Zusatzquellen: PROMISE, GitHub, COSMIC (werden falls vorhanden automatisch geladen)
+        for zusatz_name in ["raw_promise.jsonl", "raw_github_projects.jsonl", "raw_cosmic.jsonl"]:
             zusatz_pfad = verzeichnis / zusatz_name
             if zusatz_pfad.exists():
                 pfade.append(zusatz_pfad)

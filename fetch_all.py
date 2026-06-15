@@ -1,18 +1,21 @@
 """
-EstimateIQ – Kompletter Daten-Fetch aus allen drei Quellen.
+EstimateIQ – Kompletter Daten-Fetch aus allen Quellen.
 
 Abruf-Reihenfolge:
   1. TED Europa (CN + CAN für DACH, 2022–2024)
   2. PROMISE Repository (Derek Jones GitHub)
   3. GitHub Archivierte IT-Projekte
+  4. COSMIC Benchmark-Datensätze (Zenodo ISBSG + Valdes-Souto)
 
 Verwendung:
-  python fetch_all.py                    # alle drei Quellen
-  python fetch_all.py --nur ted          # nur TED
-  python fetch_all.py --nur promise      # nur PROMISE
-  python fetch_all.py --nur github       # nur GitHub
-  python fetch_all.py --max-seiten 2    # TED: max. 2 Seiten/Jahr (Test)
-  python fetch_all.py --max-repos 100   # GitHub: max. 100 Repos (Test)
+  python fetch_all.py                          # alle Quellen
+  python fetch_all.py --nur ted               # nur TED
+  python fetch_all.py --nur promise           # nur PROMISE
+  python fetch_all.py --nur github            # nur GitHub
+  python fetch_all.py --nur cosmic            # nur COSMIC (öffentliche Quellen)
+  python fetch_all.py --nur cosmic --cosmic-lokal datei.csv  # COSMIC aus lokalem File
+  python fetch_all.py --max-seiten 2         # TED: max. 2 Seiten/Jahr (Test)
+  python fetch_all.py --max-repos 100        # GitHub: max. 100 Repos (Test)
 """
 
 import argparse
@@ -47,16 +50,30 @@ def fetch_promise() -> int:
 def fetch_github(max_repos: int = 500) -> int:
     from estimateiq.data.fetch_github_projects import fetch_github_projects
     logger.info("━" * 55)
-    logger.info("Quelle 3/3 – GitHub Archivierte IT-Repositories (max %d)", max_repos)
+    logger.info("Quelle 3/4 – GitHub Archivierte IT-Repositories (max %d)", max_repos)
     return fetch_github_projects(max_repos=max_repos)
+
+
+def fetch_cosmic(lokal: Path | None = None) -> int:
+    from estimateiq.data.fetch_cosmic import fetch_cosmic_data
+    logger.info("━" * 55)
+    if lokal:
+        logger.info("Quelle 4/4 – COSMIC Datensatz (lokal: %s)", lokal)
+    else:
+        logger.info("Quelle 4/4 – COSMIC Benchmark-Datensätze (Zenodo + Valdes-Souto)")
+    return fetch_cosmic_data(lokal=lokal)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="EstimateIQ – Alle Datenquellen abrufen")
     parser.add_argument(
         "--nur",
-        choices=["ted", "promise", "github"],
+        choices=["ted", "promise", "github", "cosmic"],
         help="Nur eine bestimmte Quelle abrufen",
+    )
+    parser.add_argument(
+        "--cosmic-lokal", type=Path, default=None, metavar="DATEI",
+        help="COSMIC: lokale CSV/Excel-Datei (Originaldatensatz aus DOI 10.1016/j.jss.2025.112602)",
     )
     parser.add_argument(
         "--max-seiten", type=int, default=None,
@@ -79,6 +96,9 @@ def main() -> None:
     if args.nur is None or args.nur == "github":
         ergebnisse["github"] = fetch_github(max_repos=args.max_repos)
 
+    if args.nur is None or args.nur == "cosmic":
+        ergebnisse["cosmic"] = fetch_cosmic(lokal=args.cosmic_lokal)
+
     # Zusammenfassung
     trenner = "═" * 55
     print(f"\n{trenner}")
@@ -98,6 +118,9 @@ def main() -> None:
 
     if "github" in ergebnisse:
         print(f"  GitHub:      {ergebnisse['github']:>6,} Repositories")
+
+    if "cosmic" in ergebnisse:
+        print(f"  COSMIC:      {ergebnisse['cosmic']:>6,} Projekte")
 
     print(f"\n  Nächster Schritt:")
     print("    python -m estimateiq.data.preprocess")

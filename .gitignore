@@ -15,9 +15,9 @@ env/
 
 # ML-Artefakte (lokal, nicht im Repo) - covered by models/ above
 
-# Daten (lokal, nicht im Repo)
-data/
-models/
+# Laufzeit-Artefakte (lokal, nicht im Repo) – nur top-level Verzeichnisse
+/data/
+/models/
 
 # Frontend
 frontend/node_modules/

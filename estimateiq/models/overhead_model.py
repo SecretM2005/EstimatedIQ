@@ -175,13 +175,14 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
     df = _feature_engineering(df)
 
     # Alle Budget-Projekte als Basis (nicht nur jene mit tatsächlicher Laufzeit).
-    # PROMISE ausschließen: synthetische Budgets (effort × Stundensatz) verzerren
+    # PROMISE + COSMIC ausschließen: synthetische Budgets (effort × Stundensatz) verzerren
     # die Tagespreis-Verteilung und stimmen nicht mit echten Marktpreisen überein.
+    SYNTHETISCHE_QUELLEN = {"promise", "cosmic"}
     maske_budget = df["budget_eur"].notna()
     if "datenquelle" in df.columns:
-        maske_budget &= (df["datenquelle"] != "promise")
+        maske_budget &= ~df["datenquelle"].isin(SYNTHETISCHE_QUELLEN)
     df_sauber = df[maske_budget].reset_index(drop=True)
-    logger.info("[Tagespreis] %d Budget-Projekte gesamt (aus %d, PROMISE ausgeschlossen).",
+    logger.info("[Tagespreis] %d Budget-Projekte gesamt (aus %d, synthetische Quellen ausgeschlossen).",
                 len(df_sauber), len(df))
 
     if len(df_sauber) < 30:

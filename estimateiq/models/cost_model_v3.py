@@ -311,15 +311,16 @@ def train(df: pd.DataFrame, test_anteil: float = 0.20) -> dict:
     df = _feature_engineering(df)
     df_sauber = df[df["budget_eur"].notna()].reset_index(drop=True)
 
-    # PROMISE-Budgets sind synthetisch (effort × Stundensatz) und keine echten
-    # Marktpreise. Außerdem sind alle PROMISE-Beschreibungen formelhaft gleich,
-    # was TF-IDF-Features wertlos macht → aus Budget-Training ausschließen.
+    # PROMISE- und COSMIC-Budgets sind synthetisch (effort × Stundensatz) und keine echten
+    # Marktpreise. Formelhaft erzeugte Beschreibungen machen TF-IDF-Features wertlos
+    # → aus Budget-Training ausschließen.
+    SYNTHETISCHE_QUELLEN = {"promise", "cosmic"}
     if "datenquelle" in df_sauber.columns:
-        maske_reell = df_sauber["datenquelle"] != "promise"
-        n_promise = int((~maske_reell).sum())
-        if n_promise > 0:
+        maske_reell = ~df_sauber["datenquelle"].isin(SYNTHETISCHE_QUELLEN)
+        n_synth = int((~maske_reell).sum())
+        if n_synth > 0:
             df_sauber = df_sauber[maske_reell].reset_index(drop=True)
-            logger.info("[Training v3] %d PROMISE-Projekte ausgeschlossen (synthetische Budgets).", n_promise)
+            logger.info("[Training v3] %d synthetische Projekte ausgeschlossen (PROMISE/COSMIC).", n_synth)
 
     n_sauber = len(df_sauber)
     logger.info("[Training v3] %d/%d Zeilen mit budget_eur.", n_sauber, len(df))
