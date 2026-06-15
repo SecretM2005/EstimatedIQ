@@ -24,7 +24,7 @@ export default function LoadingScreen() {
       </div>
 
       {/* Progress bar */}
-      <div className="w-full max-w-sm h-1.5 bg-blue-100 rounded-full overflow-hidden mb-6">
+      <div className="w-full max-w-sm h-1.5 bg-slate-200 rounded-full overflow-hidden mb-6">
         <div className="h-full w-1/3 bg-accent rounded-full animate-progress" />
       </div>
 

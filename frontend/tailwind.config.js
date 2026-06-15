@@ -4,12 +4,12 @@ export default {
   theme: {
     extend: {
       colors: {
-        primary:  '#1a2744',
-        accent:   '#2563eb',
-        'accent-hover': '#1d4ed8',
-        light:    '#eff6ff',
-        'card-bg': '#f3f4f6',
-        ink:      '#111827',
+        primary:  '#0f172a',
+        accent:   '#6366f1',
+        'accent-hover': '#4f46e5',
+        light:    '#fafafa',
+        'card-bg': '#f8fafc',
+        ink:      '#0f172a',
       },
       fontFamily: {
         sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],

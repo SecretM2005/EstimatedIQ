@@ -12,9 +12,9 @@ export default function CostBar({ kosten_min, kosten_expected, kosten_max }) {
   return (
     <div className="w-full">
       {/* Track */}
-      <div className="relative h-3 bg-blue-100 rounded-full">
+      <div className="relative h-3 bg-slate-100 rounded-full">
         {/* Filled segment from min to max */}
-        <div className="absolute inset-0 bg-gradient-to-r from-blue-200 via-accent to-blue-300 rounded-full opacity-40" />
+        <div className="absolute inset-0 bg-gradient-to-r from-indigo-100 via-accent to-indigo-200 rounded-full opacity-50" />
 
         {/* Expected marker */}
         <div
