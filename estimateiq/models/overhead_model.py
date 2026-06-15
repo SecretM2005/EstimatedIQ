@@ -64,16 +64,16 @@ NUMERISCHE   = ["cpv_num", "beschreibung_laenge", "beschreibung_wortanzahl", "lo
 
 # Teamgröße-Defaults (für Reporting/Personalkosten-Ausweis, NICHT für Kostenschätzung)
 PROJEKTTYP_TEAMGROESSE: dict[str, float] = {
-    "Softwareentwicklung":           3.0,
-    "Datenverarbeitung & Analytics": 2.5,
-    "Internet- & Cloud-Dienste":     2.5,
-    "IT-Betrieb & Wartung":         2.0,
-    "IT-Beratung & Support":         1.5,
-    "Netzwerk & Infrastruktur":      2.5,
-    "IT-Prüfung & Testing":          1.5,
-    "Datenmigration & Backup":       2.0,
-    "IT-Hardware & Systeme":         1.5,
-    "Sonstige IT":                   2.0,
+    "Softwareentwicklung":           1.5,
+    "Datenverarbeitung & Analytics": 1.5,
+    "Internet- & Cloud-Dienste":     1.5,
+    "IT-Betrieb & Wartung":          1.0,
+    "IT-Beratung & Support":         1.0,
+    "Netzwerk & Infrastruktur":      1.5,
+    "IT-Prüfung & Testing":          1.0,
+    "Datenmigration & Backup":       1.5,
+    "IT-Hardware & Systeme":         1.0,
+    "Sonstige IT":                   1.5,
 }
 
 _TEAMGROESSE_MUSTER = [

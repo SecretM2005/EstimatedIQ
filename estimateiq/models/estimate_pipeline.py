@@ -45,7 +45,7 @@ STUNDEN_PRO_TAG = 8.0
 # Skalierungsfaktoren je Projektgröße
 # "klein": Freelancer/Solo bis ~3 Monate; "mittel": Standardprojekt; "gross": Enterprise
 GROESSE_TEAM_FAKTOR: dict[str, float] = {
-    "klein":  0.40,   # ~1 Person bei Softwareentwicklung-Default (3 × 0.4 = 1.2)
+    "klein":  0.40,
     "mittel": 1.00,
     "gross":  1.60,
 }
@@ -53,6 +53,14 @@ GROESSE_DAUER_HINWEIS: dict[str, str] = {
     "klein":  "⚠ Kleine Projekte werden vom Modell tendenziell überschätzt.",
     "mittel": "",
     "gross":  "",
+}
+
+# TED-Ausschreibungen enthalten Wartungs-/Betriebsphasen und Vergabe-Puffer.
+# Die reale Entwicklungszeit im Privatmarkt beträgt ca. 35–65 % der Ausschreibungslaufzeit.
+DAUER_KALIBRIERUNG: dict[str, float] = {
+    "klein":  0.35,   # kurze Projekte: ~35 % der TED-Laufzeit
+    "mittel": 0.45,   # Standardprojekte: ~45 %
+    "gross":  0.65,   # Enterprise (inkl. Rollout): ~65 %
 }
 
 # Overhead-Faktor je Projekttyp (deterministisch, kein ML)
@@ -258,6 +266,7 @@ def estimate(
     cpv_str    = str(cpv_code or "72200000")
     projekttyp = _cpv_zu_projekttyp(cpv_str)
     land_upper = (land or "DE").upper()[:2]
+    groesse_key = projekt_groesse if projekt_groesse in GROESSE_TEAM_FAKTOR else "mittel"
 
     # ----- Schritt 1: Laufzeit (ML) -----
     if dauer_override is not None:
@@ -274,11 +283,12 @@ def estimate(
         }])
         pred       = dur_cache["predict"](df_dur)
         dauer_tage = float(pred[0])
-        logger.debug("[Pipeline] Laufzeit geschätzt: %d Tage", round(dauer_tage))
+        # TED-Kalibrierung: Ausschreibungslaufzeit → Privatmarkt-Entwicklungszeit
+        dauer_tage = max(3.0, dauer_tage * DAUER_KALIBRIERUNG.get(groesse_key, 0.45))
+        logger.debug("[Pipeline] Laufzeit geschätzt (kalibriert): %d Tage", round(dauer_tage))
 
     # ----- Schritt 2: Kosten deterministisch berechnen -----
     from estimateiq.models.overhead_model import extract_teamgroesse
-    groesse_key       = projekt_groesse if projekt_groesse in GROESSE_TEAM_FAKTOR else "mittel"
     teamgroesse_basis = extract_teamgroesse(beschreibung, projekttyp)
     teamgroesse_modell = max(1.0, teamgroesse_basis * GROESSE_TEAM_FAKTOR[groesse_key])
 
