@@ -115,11 +115,15 @@ async def lifespan(app: FastAPI):
     try:
         from estimateiq.models.estimate_pipeline import _lade_duration_modell
         _lade_duration_modell()
-        logger.info("Laufzeit-Modell geladen.")
+        logger.info("IT-Modell geladen.")
     except FileNotFoundError as exc:
-        logger.warning("Modell noch nicht trainiert: %s", exc)
+        logger.warning("IT-Modell noch nicht trainiert: %s", exc)
     except Exception as exc:
-        logger.warning("Modell-Vorlade fehlgeschlagen: %s", exc)
+        logger.warning("IT-Modell-Vorlade fehlgeschlagen: %s", exc)
+    try:
+        _lade_bau_bert()
+    except Exception as exc:
+        logger.warning("Bau-BERT Vorlade fehlgeschlagen: %s", exc)
     yield
 
 
@@ -589,3 +593,347 @@ async def download_template():
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="estimateiq_vorlage.csv"'},
     )
+
+
+# ===========================================================================
+# Bau-Modul – Kostenschätzung für Bauprojekte (TED-Datenbasis)
+# ===========================================================================
+
+import threading as _threading
+
+_BAU_BERT_LOCK                          = _threading.Lock()
+_bau_bert: dict                         = {"tokenizer": None, "model": None, "bereit": False}
+_BAU_GEWERK_ZAEHLER: dict[str, int] | None = None
+
+BBSR_INDEX_BUNDESLAND: dict[str, float] = {
+    "Baden-Württemberg":      108.0,
+    "Bayern":                 118.5,
+    "Berlin":                 105.8,
+    "Brandenburg":             94.0,
+    "Bremen":                 102.0,
+    "Hamburg":                110.0,
+    "Hessen":                 105.0,
+    "Mecklenburg-Vorpommern":  92.0,
+    "Niedersachsen":           98.0,
+    "Nordrhein-Westfalen":    101.2,
+    "Rheinland-Pfalz":         98.5,
+    "Saarland":                97.0,
+    "Sachsen":                 92.1,
+    "Sachsen-Anhalt":          91.0,
+    "Schleswig-Holstein":      99.0,
+    "Thüringen":               91.5,
+}
+_BAU_LAND_MEDIAN_BBSR: dict[str, float] = {"DE": 100.0, "AT": 108.0, "CH": 125.0}
+BAU_MODELL_VERSION = "bau-v1-bert"
+
+_GEWERK_KEYWORDS: list[tuple[list[str], str]] = [
+    (["elektr", "strom", "kabel", "schalt", "leuch"],                         "Elektro"),
+    (["sanitär", "heizung", "wasser", "rohr", " bad", "shk", "wärme", "lüftung", "klima"], "Sanitär/HLK"),
+    (["maler", "anstrich", "tapez", "farbe", "putz"],                         "Maler"),
+    (["fliesen", "belag", "estrich", "parkett"],                              "Fliesen/Boden"),
+    (["holz", "dach", "zimmer", "carport", "pergola", "dachstuhl"],           "Zimmerer"),
+    (["neubau", "rohbau", "beton", "maurer", "fundament", "stahlbeton"],      "Hochbau/Neubau"),
+    (["ausbau", "umbau", "sanierung", "renovation", "trockenbau"],            "Ausbau/Umbau"),
+    (["tga", "gebäudetechnik", "haustechnik", "msr", "bms"],                  "TGA"),
+    (["straße", "tief", "kanal", "pflaster", "asphalt", "gehweg"],            "Tief-/Straßenbau"),
+]
+
+_PROJEKTTYP_KEYWORDS: list[tuple[list[str], str]] = [
+    (["neubau", "rohbau", "errichtung", "erstellung"],   "Neubau"),
+    (["sanierung", "generalsanierung", "kernsanierung"], "Sanierung"),
+    (["ausbau", "umbau", "erweiterung", "anbau"],        "Ausbau"),
+    (["renovierung", "instandsetzung", "erneuerung"],    "Renovierung"),
+]
+
+
+def _lade_bau_bert() -> None:
+    global _bau_bert
+    with _BAU_BERT_LOCK:
+        if _bau_bert["bereit"]:
+            return
+        try:
+            from transformers import AutoTokenizer, AutoModel
+            logger.info("[Bau] Lade DistilBERT für Inference...")
+            _bau_bert["tokenizer"] = AutoTokenizer.from_pretrained("distilbert-base-german-cased")
+            model = AutoModel.from_pretrained("distilbert-base-german-cased")
+            model.eval()
+            _bau_bert["model"] = model
+            logger.info("[Bau] DistilBERT vorgeladen.")
+        except Exception as exc:
+            logger.warning("[Bau] DistilBERT nicht verfügbar: %s – Endpoint läuft ohne Embeddings.", exc)
+        finally:
+            _bau_bert["bereit"] = True
+
+
+def _erkenne_gewerk_bau(beschreibung: str, gewerk_param: str) -> str:
+    if gewerk_param != "auto":
+        return gewerk_param
+    text = beschreibung.lower()
+    for keywords, name in _GEWERK_KEYWORDS:
+        if any(kw in text for kw in keywords):
+            return name
+    return "Allgemein"
+
+
+def _erkenne_projekttyp_bau(beschreibung: str, projekttyp_param: str) -> str:
+    if projekttyp_param != "auto":
+        return projekttyp_param
+    text = beschreibung.lower()
+    for keywords, name in _PROJEKTTYP_KEYWORDS:
+        if any(kw in text for kw in keywords):
+            return name
+    return "Allgemein"
+
+
+def _bbsr_index_bau(bundesland: str | None, land: str) -> float:
+    if bundesland:
+        for key, val in BBSR_INDEX_BUNDESLAND.items():
+            if key.lower() in bundesland.lower() or bundesland.lower() in key.lower():
+                return val
+    return _BAU_LAND_MEDIAN_BBSR.get(land.upper(), 100.0)
+
+
+def _confidence_bau(
+    gewerk: str, projekttyp: str, geo_ok: bool, kosten: float, beschreibung: str
+) -> tuple[str, str]:
+    if len(beschreibung) < 50:
+        return "niedrig", "Beschreibung zu kurz – mehr Details verbessern die Genauigkeit."
+    if kosten > 10_000_000:
+        return "niedrig", f"Kostenschätzung ({kosten / 1e6:.1f} Mio €) liegt über dem verlässlichen Modellbereich (< 10 Mio €)."
+    if gewerk == "Allgemein":
+        return "niedrig", "Gewerk konnte nicht aus der Beschreibung erkannt werden."
+    if 50_000 <= kosten <= 2_000_000 and projekttyp != "Allgemein" and geo_ok:
+        return "hoch", "Gewerk, Projekttyp und Standort eindeutig erkannt – Schätzung im Normalbereich."
+    if 2_000_000 < kosten <= 10_000_000:
+        return "mittel", "Kostenschätzung über 2 Mio € – Modell neigt bei Großprojekten zur Unterschätzung."
+    return "mittel", "Gewerk erkannt, Projekttyp oder Standort nicht vollständig spezifiziert."
+
+
+def _schwaechen_bau(gewerk: str, kosten: float, confidence: str) -> list[str]:
+    schwaechen: list[str] = []
+    if kosten > 2_000_000:
+        schwaechen.append(
+            "Großprojekte über 2 Mio € werden vom Modell tendenziell zur Mitte gezogen. "
+            "Reale Kosten können deutlich höher liegen."
+        )
+    if gewerk in ("Elektro", "Sanitär/HLK", "TGA"):
+        schwaechen.append(
+            "Laufzeiten für TGA-Gewerke (Elektro, Heizung, Sanitär) werden aktuell überschätzt. "
+            "Typisch sind 60–180 Tage, nicht 250–368 Tage."
+        )
+    if confidence == "niedrig":
+        schwaechen.append(
+            "Projektbeschreibung enthält wenig spezifische Details. "
+            "Mehr Kontext verbessert die Genauigkeit."
+        )
+    return schwaechen
+
+
+def _zaehle_referenzprojekte_bau(gewerk: str) -> int:
+    global _BAU_GEWERK_ZAEHLER
+    if _BAU_GEWERK_ZAEHLER is None:
+        bau_parquet = Path("data/processed/notices_bau.parquet")
+        if bau_parquet.exists():
+            try:
+                df = pd.read_parquet(bau_parquet, columns=["gewerk", "budget_eur"])
+                zaehler: dict[str, int] = {}
+                for g, gruppe in df.groupby("gewerk"):
+                    zaehler[str(g)] = int(gruppe["budget_eur"].notna().sum())
+                zaehler["_gesamt"] = int(df["budget_eur"].notna().sum())
+                _BAU_GEWERK_ZAEHLER = zaehler
+            except Exception:
+                _BAU_GEWERK_ZAEHLER = {}
+        else:
+            _BAU_GEWERK_ZAEHLER = {}
+    if gewerk == "Allgemein":
+        return _BAU_GEWERK_ZAEHLER.get("_gesamt", 0)
+    return int(_BAU_GEWERK_ZAEHLER.get(gewerk, _BAU_GEWERK_ZAEHLER.get("_gesamt", 0)))
+
+
+# ── Bau Schemas ───────────────────────────────────────────────────────────────
+
+class BauEstimateRequest(BaseModel):
+    beschreibung: Annotated[str, Field(min_length=30, max_length=10_000)]
+    stadt:        str
+    land:         str = "DE"
+    gewerk:       str = "auto"
+    projekttyp:   str = "auto"
+
+
+class BauEstimateResponse(BaseModel):
+    kosten_min:           float
+    kosten_expected:      float
+    kosten_max:           float
+    dauer_min_tage:       int
+    dauer_expected_tage:  int
+    dauer_max_tage:       int
+    gewerk_erkannt:       str
+    projekttyp_erkannt:   str
+    stadt_normalisiert:   str
+    bbsr_index:           float
+    confidence:           str
+    confidence_grund:     str
+    modell_version:       str
+    n_referenzprojekte:   int
+    bekannte_schwaechen:  list[str]
+
+
+# ── Bau Endpoints ─────────────────────────────────────────────────────────────
+
+@app.post("/api/bau/estimate", response_model=BauEstimateResponse, tags=["Bau"])
+async def bau_estimate(req: BauEstimateRequest):
+    """Schätzt Kosten und Laufzeit für Bauprojekte (Datenbasis: TED EU-Ausschreibungen)."""
+    import re
+
+    land = req.land.upper()
+    if land not in ("DE", "AT", "CH"):
+        raise HTTPException(status_code=400, detail="Land muss DE, AT oder CH sein.")
+
+    gewerk     = _erkenne_gewerk_bau(req.beschreibung, req.gewerk)
+    projekttyp = _erkenne_projekttyp_bau(req.beschreibung, req.projekttyp)
+
+    # Geocoding (blockierend → Executor)
+    loop = asyncio.get_event_loop()
+    try:
+        from estimateiq.data.geo_features import geocode as _geocode_fn
+        geo    = await loop.run_in_executor(None, lambda: _geocode_fn(req.stadt, land=land))
+        geo_ok = geo.get("lat") is not None
+    except Exception:
+        geo    = {"lat": None, "lon": None, "bundesland": None,
+                  "ist_metropole": False, "ist_grossstadt": False}
+        geo_ok = False
+
+    bbsr       = _bbsr_index_bau(geo.get("bundesland"), land)
+    bundesland = geo.get("bundesland") or land
+
+    # Regex-Features aus Beschreibungstext
+    def _regex_zahl(text: str, pattern: str, mult: float = 1.0,
+                    lo: float = 0, hi: float = 1e9) -> float:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            try:
+                v = float(m.group(1).replace(".", "").replace(",", ".")) * mult
+                if lo <= v <= hi:
+                    return v
+            except ValueError:
+                pass
+        return 0.0
+
+    flaeche   = _regex_zahl(req.beschreibung,
+                    r"(\d[\d.]*)\s*(?:m\s*[²2]|qm|Quadratmeter)", lo=10, hi=500_000)
+    einheiten = _regex_zahl(req.beschreibung,
+                    r"(\d+)\s*(?:Wohneinheit|Wohnung|WE\b)", lo=1, hi=10_000)
+    laenge    = _regex_zahl(req.beschreibung,
+                    r"(\d+(?:[,.]\d+)?)\s*km", mult=1000, lo=50, hi=200_000)
+
+    df_input = pd.DataFrame([{
+        "beschreibung":      req.beschreibung,
+        "gewerk":            gewerk,
+        "projekttyp":        projekttyp,
+        "land":              land,
+        "bundesland":        bundesland,
+        "latitude":          float(geo.get("lat") or 51.16),
+        "longitude":         float(geo.get("lon") or 10.45),
+        "bbsr_index":        bbsr,
+        "ist_metropole":     bool(geo.get("ist_metropole", False)),
+        "ist_grossstadt":    bool(geo.get("ist_grossstadt", False)),
+        "jahr":              2024,
+        "flaeche_m2":        flaeche,
+        "einheiten":         einheiten,
+        "laenge_m":          laenge,
+        "hat_flaeche":       float(flaeche > 0),
+        "beschreibung_laenge": float(len(req.beschreibung)),
+    }])
+
+    # BERT Embeddings (lazy load, dann gecacht)
+    if not _bau_bert["bereit"]:
+        await loop.run_in_executor(None, _lade_bau_bert)
+
+    embeddings = None
+    if _bau_bert["tokenizer"] is not None:
+        try:
+            import torch
+            with torch.inference_mode():
+                encoded = _bau_bert["tokenizer"](
+                    [req.beschreibung],
+                    padding=True, truncation=True,
+                    max_length=128, return_tensors="pt",
+                )
+                out = _bau_bert["model"](**encoded)
+            embeddings = out.last_hidden_state[:, 0, :].numpy()
+        except Exception as exc:
+            logger.warning("[Bau] BERT-Inference fehlgeschlagen: %s", exc)
+
+    # XGBoost-Vorhersage
+    try:
+        from estimateiq.models.cost_model_bau     import predict as _predict_kosten
+        from estimateiq.models.duration_model_bau import predict as _predict_dauer
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Bau-Modelle nicht trainiert. Bitte zuerst train_bau.py ausführen. ({exc})"
+        ) from exc
+
+    try:
+        kosten_raw = float(_predict_kosten(df_input, embeddings=embeddings)[0])
+        dauer_raw  = float(_predict_dauer(df_input,  embeddings=embeddings)[0])
+    except Exception as exc:
+        logger.exception("[Bau] Vorhersagefehler: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Vorhersagefehler: {exc}") from exc
+
+    # Unsicherheitsbänder (MdAPE-basiert: Kosten 61%, Dauer 30%)
+    kosten_min = round(kosten_raw * 0.40, 0)
+    kosten_max = round(kosten_raw * 2.50, 0)
+    dauer_min  = max(1, int(dauer_raw * 0.60))
+    dauer_max  = int(dauer_raw * 1.60)
+
+    confidence, confidence_grund = _confidence_bau(
+        gewerk, projekttyp, geo_ok, kosten_raw, req.beschreibung
+    )
+
+    return BauEstimateResponse(
+        kosten_min          = kosten_min,
+        kosten_expected     = round(kosten_raw, 0),
+        kosten_max          = kosten_max,
+        dauer_min_tage      = dauer_min,
+        dauer_expected_tage = int(dauer_raw),
+        dauer_max_tage      = dauer_max,
+        gewerk_erkannt      = gewerk,
+        projekttyp_erkannt  = projekttyp,
+        stadt_normalisiert  = req.stadt.strip().title(),
+        bbsr_index          = bbsr,
+        confidence          = confidence,
+        confidence_grund    = confidence_grund,
+        modell_version      = BAU_MODELL_VERSION,
+        n_referenzprojekte  = _zaehle_referenzprojekte_bau(gewerk),
+        bekannte_schwaechen = _schwaechen_bau(gewerk, kosten_raw, confidence),
+    )
+
+
+@app.get("/api/bau/health", tags=["Bau"])
+async def bau_health():
+    """Status und Metadaten des Bau-Schätzmodells."""
+    from estimateiq.models.cost_model_bau     import MODELL_PKL as KOSTEN_PKL
+    from estimateiq.models.duration_model_bau import MODELL_PKL as DAUER_PKL
+
+    kosten_ok = KOSTEN_PKL.exists()
+    dauer_ok  = DAUER_PKL.exists()
+    trainiert_am = None
+    if kosten_ok:
+        import datetime as _dt
+        trainiert_am = _dt.datetime.fromtimestamp(
+            KOSTEN_PKL.stat().st_mtime
+        ).strftime("%Y-%m-%d")
+
+    return {
+        "status":           "ok" if (kosten_ok and dauer_ok) else "modell_fehlt",
+        "modell_version":   BAU_MODELL_VERSION,
+        "trainiert_am":     trainiert_am,
+        "n_trainingsdaten": 12_322,
+        "kosten_mdape":     0.611,
+        "dauer_mdape":      0.298,
+        "bekannte_schwaechen": [
+            "Großprojekte > 2 Mio € werden unterschätzt",
+            "TGA-Laufzeiten (Elektro, Heizung, Sanitär) werden überschätzt",
+        ],
+    }
