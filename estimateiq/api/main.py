@@ -628,7 +628,7 @@ BAU_MODELL_VERSION = "bau-v1-bert"
 
 _GEWERK_KEYWORDS: list[tuple[list[str], str]] = [
     # Spezifischste zuerst → verhindert False Matches durch Nebenbegriffe
-    (["straße", "tief", "kanal", "pflaster", "asphalt", "gehweg"],            "Tief-/Straßenbau"),
+    (["straße", "tiefbau", "kanalisation", "pflaster", "asphalt", "gehweg"],   "Tief-/Straßenbau"),
     (["neubau", "rohbau", "beton", "maurer", "fundament", "stahlbeton"],      "Hochbau/Neubau"),
     (["ausbau", "umbau", "sanierung", "renovation", "trockenbau"],            "Ausbau/Umbau"),
     (["holz", "dach", "zimmer", "carport", "pergola", "dachstuhl"],           "Zimmerer"),
