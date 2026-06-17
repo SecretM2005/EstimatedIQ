@@ -225,6 +225,14 @@ def main() -> None:
         "--bert-max-length", type=int, default=128,
         help="Max. Token-Länge für BERT (Standard: 128; Attention ist O(n²))",
     )
+    parser.add_argument(
+        "--min-jahr", type=int, default=None,
+        help="Nur Daten ab diesem Jahr verwenden (z.B. 2023 für eForms-Qualität)",
+    )
+    parser.add_argument(
+        "--max-jahr", type=int, default=None,
+        help="Nur Daten bis einschließlich diesem Jahr verwenden",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -246,6 +254,15 @@ def main() -> None:
     logger.info("Lade %s ...", PARQUET_PFAD)
     df = pd.read_parquet(PARQUET_PFAD)
     logger.info("Geladen: %d Zeilen, %d Spalten", len(df), len(df.columns))
+
+    if args.min_jahr:
+        vor = len(df)
+        df = df[df["jahr"] >= args.min_jahr].reset_index(drop=True)
+        logger.info("Jahresfilter ≥%d: %d → %d Zeilen", args.min_jahr, vor, len(df))
+    if args.max_jahr:
+        vor = len(df)
+        df = df[df["jahr"] <= args.max_jahr].reset_index(drop=True)
+        logger.info("Jahresfilter ≤%d: %d → %d Zeilen", args.max_jahr, vor, len(df))
 
     if args.max_samples and len(df) > args.max_samples:
         df = df.sample(args.max_samples, random_state=42).reset_index(drop=True)
