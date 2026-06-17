@@ -627,15 +627,16 @@ _BAU_LAND_MEDIAN_BBSR: dict[str, float] = {"DE": 100.0, "AT": 108.0, "CH": 125.0
 BAU_MODELL_VERSION = "bau-v1-bert"
 
 _GEWERK_KEYWORDS: list[tuple[list[str], str]] = [
-    (["elektr", "strom", "kabel", "schalt", "leuch"],                         "Elektro"),
-    (["sanitär", "heizung", "wasser", "rohr", " bad", "shk", "wärme", "lüftung", "klima"], "Sanitär/HLK"),
-    (["maler", "anstrich", "tapez", "farbe", "putz"],                         "Maler"),
-    (["fliesen", "belag", "estrich", "parkett"],                              "Fliesen/Boden"),
-    (["holz", "dach", "zimmer", "carport", "pergola", "dachstuhl"],           "Zimmerer"),
+    # Spezifischste zuerst → verhindert False Matches durch Nebenbegriffe
+    (["straße", "tief", "kanal", "pflaster", "asphalt", "gehweg"],            "Tief-/Straßenbau"),
     (["neubau", "rohbau", "beton", "maurer", "fundament", "stahlbeton"],      "Hochbau/Neubau"),
     (["ausbau", "umbau", "sanierung", "renovation", "trockenbau"],            "Ausbau/Umbau"),
+    (["holz", "dach", "zimmer", "carport", "pergola", "dachstuhl"],           "Zimmerer"),
+    (["fliesen", "belag", "estrich", "parkett"],                              "Fliesen/Boden"),
+    (["maler", "anstrich", "tapez", "farbe", "putz"],                         "Maler"),
+    (["elektr", "strom", "kabel", "schalt", "leuch"],                         "Elektro"),
+    (["sanitär", "heizung", "wasser", "rohr", " bad", "shk", "wärme", "lüftung", "klima"], "Sanitär/HLK"),
     (["tga", "gebäudetechnik", "haustechnik", "msr", "bms"],                  "TGA"),
-    (["straße", "tief", "kanal", "pflaster", "asphalt", "gehweg"],            "Tief-/Straßenbau"),
 ]
 
 _PROJEKTTYP_KEYWORDS: list[tuple[list[str], str]] = [
@@ -687,8 +688,14 @@ def _erkenne_projekttyp_bau(beschreibung: str, projekttyp_param: str) -> str:
 
 def _bbsr_index_bau(bundesland: str | None, land: str) -> float:
     if bundesland:
+        bl = bundesland.lower()
+        # Exakter Match zuerst (verhindert "Sachsen" → "Niedersachsen")
         for key, val in BBSR_INDEX_BUNDESLAND.items():
-            if key.lower() in bundesland.lower() or bundesland.lower() in key.lower():
+            if bl == key.lower():
+                return val
+        # Teilstring-Fallback (z.B. "Freistaat Sachsen" → "Sachsen")
+        for key, val in BBSR_INDEX_BUNDESLAND.items():
+            if key.lower() in bl:
                 return val
     return _BAU_LAND_MEDIAN_BBSR.get(land.upper(), 100.0)
 
