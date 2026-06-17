@@ -30,22 +30,25 @@ PARQUET_PFAD = Path("data/processed/notices_bau.parquet")
 # BERT-Embeddings
 # ---------------------------------------------------------------------------
 
-def extrahiere_embeddings(texte: list[str], batch_size: int = 32) -> np.ndarray:
+def extrahiere_embeddings(texte: list[str], batch_size: int = 16, max_length: int = 128) -> np.ndarray:
     """
-    Extrahiert [CLS]-Token-Embeddings via bert-base-german-cased.
+    Extrahiert [CLS]-Token-Embeddings via distilbert-base-german-cased.
     Gibt numpy-Array der Form (n_samples, 768) zurück.
+    DistilBERT ist ~60% schneller als BERT-base bei 97% der Qualität.
     """
     from transformers import AutoTokenizer, AutoModel
     import torch
 
-    logger.info("[BERT] Lade Modell bert-base-german-cased...")
-    tokenizer = AutoTokenizer.from_pretrained("bert-base-german-cased")
-    modell    = AutoModel.from_pretrained("bert-base-german-cased")
+    modell_name = "distilbert-base-german-cased"
+    logger.info("[BERT] Lade Modell %s...", modell_name)
+    tokenizer = AutoTokenizer.from_pretrained(modell_name)
+    modell    = AutoModel.from_pretrained(modell_name)
     modell.eval()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     modell  = modell.to(device)
-    logger.info("[BERT] Gerät: %s | %d Texte | Batch-Größe: %d", device, len(texte), batch_size)
+    logger.info("[BERT] Gerät: %s | %d Texte | Batch=%d | MaxLen=%d",
+                device, len(texte), batch_size, max_length)
 
     alle_embeddings: list[np.ndarray] = []
 
@@ -55,11 +58,11 @@ def extrahiere_embeddings(texte: list[str], batch_size: int = 32) -> np.ndarray:
             batch,
             padding=True,
             truncation=True,
-            max_length=512,
+            max_length=max_length,
             return_tensors="pt",
         ).to(device)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             ausgabe = modell(**encoded)
 
         cls_tokens = ausgabe.last_hidden_state[:, 0, :].cpu().numpy()
@@ -79,40 +82,40 @@ def extrahiere_embeddings(texte: list[str], batch_size: int = 32) -> np.ndarray:
 
 VALIDIERUNGS_PROJEKTE = [
     {
-        "name":        "Badezimmer-Renovation München",
-        "beschreibung": "Badezimmer-Renovation 15m² Fliesen Sanitär Wände Boden komplett",
-        "gewerk":       "Fliesen/Boden",
-        "projekttyp":   "Ausbauarbeiten",
+        "name":        "Straßensanierung NRW",
+        "beschreibung": "Deckenerneuerung Gemeindestraße 1,5 km Asphalt Randstreifen Entwässerungsrinnen Fahrbahnmarkierung",
+        "gewerk":       "Tief-/Straßenbau",
+        "projekttyp":   "Hoch- und Tiefbau",
         "land":         "DE",
-        "bundesland":   "Bayern",
-        "ist_metropole": True,
-        "ist_grossstadt": True,
-        "bbsr_index":   118.5,
-        "latitude":     48.15,
-        "longitude":    11.58,
+        "bundesland":   "Nordrhein-Westfalen",
+        "ist_metropole": False,
+        "ist_grossstadt": False,
+        "bbsr_index":   101.2,
+        "latitude":     51.43,
+        "longitude":    7.66,
         "jahr":         2024,
-        "budget_erwartung": (8_000, 15_000),
-        "dauer_erwartung":  (14, 28),
+        "budget_erwartung": (300_000, 1_500_000),
+        "dauer_erwartung":  (60, 240),
     },
     {
-        "name":        "Einfamilienhaus Hamburg",
-        "beschreibung": "Neubau Einfamilienhaus 150m² KfW-55 Energiestandard schlüsselfertig inkl. Keller",
+        "name":        "Generalsanierung Schule Bayern",
+        "beschreibung": "Generalsanierung Grundschule 2500m² Fassade Dach Fenster Heizungsanlage Innenausbau Barrierefreiheit",
         "gewerk":       "Hochbau/Neubau",
         "projekttyp":   "Hoch- und Tiefbau",
         "land":         "DE",
-        "bundesland":   "Hamburg",
-        "ist_metropole": True,
+        "bundesland":   "Bayern",
+        "ist_metropole": False,
         "ist_grossstadt": True,
-        "bbsr_index":   113.8,
-        "latitude":     53.55,
-        "longitude":    9.99,
+        "bbsr_index":   118.5,
+        "latitude":     48.37,
+        "longitude":    10.89,
         "jahr":         2024,
-        "budget_erwartung": (350_000, 500_000),
-        "dauer_erwartung":  (365, 548),
+        "budget_erwartung": (1_200_000, 5_000_000),
+        "dauer_erwartung":  (180, 540),
     },
     {
-        "name":        "Elektroinstallation Leipzig",
-        "beschreibung": "Elektroinstallation Bürogebäude 500m² Vollverkabelung Unterverteilung Beleuchtung",
+        "name":        "Elektroanlage Verwaltung Leipzig",
+        "beschreibung": "Elektroinstallation Verwaltungsgebäude 2000m² Unterverteilungen LED-Beleuchtung Brandmeldeanlage USV",
         "gewerk":       "Elektro",
         "projekttyp":   "Technische Gebäudeausrüstung",
         "land":         "DE",
@@ -123,14 +126,14 @@ VALIDIERUNGS_PROJEKTE = [
         "latitude":     51.33,
         "longitude":    12.38,
         "jahr":         2024,
-        "budget_erwartung": (20_000, 40_000),
-        "dauer_erwartung":  (21, 42),
+        "budget_erwartung": (150_000, 600_000),
+        "dauer_erwartung":  (60, 180),
     },
     {
-        "name":        "Dachausbau Wien",
-        "beschreibung": "Dachausbau 80m² mit Velux-Dachfenstern Dämmung Trockenbau Elektro Fußbodenheizung",
-        "gewerk":       "Ausbau allgemein",
-        "projekttyp":   "Ausbauarbeiten",
+        "name":        "Sozialer Wohnungsbau Wien",
+        "beschreibung": "Neubau Wohnanlage 40 Wohneinheiten 3500m² Wohnfläche Tiefgarage Außenanlagen geförderter Wohnbau",
+        "gewerk":       "Hochbau/Neubau",
+        "projekttyp":   "Hoch- und Tiefbau",
         "land":         "AT",
         "bundesland":   "AT",
         "ist_metropole": True,
@@ -139,14 +142,14 @@ VALIDIERUNGS_PROJEKTE = [
         "latitude":     48.21,
         "longitude":    16.36,
         "jahr":         2024,
-        "budget_erwartung": (55_000, 95_000),
-        "dauer_erwartung":  (56, 98),
+        "budget_erwartung": (1_500_000, 6_000_000),
+        "dauer_erwartung":  (240, 600),
     },
     {
-        "name":        "Malerarbeiten Berlin",
-        "beschreibung": "Malerarbeiten Innen 200m² Altbau Wohnräume Decken Wände Tapete abziehen Grundierung",
-        "gewerk":       "Maler",
-        "projekttyp":   "Ausbauarbeiten",
+        "name":        "Heizungsanlage Rathaus Berlin",
+        "beschreibung": "Erneuerung Heizungsanlage öffentliches Gebäude Wärmepumpe Verteilerstation Heizkörpertausch MSR-Technik",
+        "gewerk":       "Heizung/Lüftung/Klima",
+        "projekttyp":   "Technische Gebäudeausrüstung",
         "land":         "DE",
         "bundesland":   "Berlin",
         "ist_metropole": True,
@@ -155,8 +158,8 @@ VALIDIERUNGS_PROJEKTE = [
         "latitude":     52.52,
         "longitude":    13.40,
         "jahr":         2024,
-        "budget_erwartung": (7_000, 13_000),
-        "dauer_erwartung":  (7, 14),
+        "budget_erwartung": (120_000, 500_000),
+        "dauer_erwartung":  (60, 180),
     },
 ]
 
@@ -215,6 +218,26 @@ def main() -> None:
         "--nur-validierung", action="store_true",
         help="Nur Validierung ausführen (Modelle müssen bereits trainiert sein)",
     )
+    parser.add_argument(
+        "--bert-batch-size", type=int, default=16,
+        help="Batch-Größe für BERT-Inferenz (Standard: 16; bei OOM auf 8 reduzieren)",
+    )
+    parser.add_argument(
+        "--bert-max-length", type=int, default=128,
+        help="Max. Token-Länge für BERT (Standard: 128; Attention ist O(n²))",
+    )
+    parser.add_argument(
+        "--min-jahr", type=int, default=None,
+        help="Nur Daten ab diesem Jahr verwenden (z.B. 2023 für eForms-Qualität)",
+    )
+    parser.add_argument(
+        "--max-jahr", type=int, default=None,
+        help="Nur Daten bis einschließlich diesem Jahr verwenden",
+    )
+    parser.add_argument(
+        "--kein-fallback-gewerk", action="store_true",
+        help="Zeilen mit Gewerk 'Bauarbeiten allgemein' ausschließen (62%% Fallback-Kategorie)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -237,6 +260,21 @@ def main() -> None:
     df = pd.read_parquet(PARQUET_PFAD)
     logger.info("Geladen: %d Zeilen, %d Spalten", len(df), len(df.columns))
 
+    if args.min_jahr:
+        vor = len(df)
+        df = df[df["jahr"] >= args.min_jahr].reset_index(drop=True)
+        logger.info("Jahresfilter ≥%d: %d → %d Zeilen", args.min_jahr, vor, len(df))
+    if args.max_jahr:
+        vor = len(df)
+        df = df[df["jahr"] <= args.max_jahr].reset_index(drop=True)
+        logger.info("Jahresfilter ≤%d: %d → %d Zeilen", args.max_jahr, vor, len(df))
+
+    if args.kein_fallback_gewerk:
+        vor = len(df)
+        df = df[df["gewerk"] != "Bauarbeiten allgemein"].reset_index(drop=True)
+        logger.info("Fallback-Gewerk entfernt: %d → %d Zeilen (%.0f%% behalten)",
+                    vor, len(df), 100 * len(df) / vor if vor else 0)
+
     if args.max_samples and len(df) > args.max_samples:
         df = df.sample(args.max_samples, random_state=42).reset_index(drop=True)
         logger.info("Eingeschränkt auf %d Samples.", args.max_samples)
@@ -245,7 +283,9 @@ def main() -> None:
     embeddings: np.ndarray | None = None
     if not args.kein_bert:
         texte = df["beschreibung"].fillna("").tolist()
-        embeddings = extrahiere_embeddings(texte)
+        embeddings = extrahiere_embeddings(
+            texte, batch_size=args.bert_batch_size, max_length=args.bert_max_length
+        )
         # Cache für spätere Nutzung
         embed_pfad = Path("data/processed/embeddings_bau.npy")
         np.save(embed_pfad, embeddings)
