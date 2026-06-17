@@ -30,10 +30,11 @@ PARQUET_PFAD = Path("data/processed/notices_bau.parquet")
 # BERT-Embeddings
 # ---------------------------------------------------------------------------
 
-def extrahiere_embeddings(texte: list[str], batch_size: int = 32) -> np.ndarray:
+def extrahiere_embeddings(texte: list[str], batch_size: int = 16, max_length: int = 128) -> np.ndarray:
     """
     Extrahiert [CLS]-Token-Embeddings via bert-base-german-cased.
     Gibt numpy-Array der Form (n_samples, 768) zurück.
+    max_length=128 reicht für kurze Vergabetexte und ist 16× schneller als 512.
     """
     from transformers import AutoTokenizer, AutoModel
     import torch
@@ -45,7 +46,8 @@ def extrahiere_embeddings(texte: list[str], batch_size: int = 32) -> np.ndarray:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     modell  = modell.to(device)
-    logger.info("[BERT] Gerät: %s | %d Texte | Batch-Größe: %d", device, len(texte), batch_size)
+    logger.info("[BERT] Gerät: %s | %d Texte | Batch=%d | MaxLen=%d",
+                device, len(texte), batch_size, max_length)
 
     alle_embeddings: list[np.ndarray] = []
 
@@ -55,11 +57,11 @@ def extrahiere_embeddings(texte: list[str], batch_size: int = 32) -> np.ndarray:
             batch,
             padding=True,
             truncation=True,
-            max_length=512,
+            max_length=max_length,
             return_tensors="pt",
         ).to(device)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             ausgabe = modell(**encoded)
 
         cls_tokens = ausgabe.last_hidden_state[:, 0, :].cpu().numpy()
@@ -216,8 +218,12 @@ def main() -> None:
         help="Nur Validierung ausführen (Modelle müssen bereits trainiert sein)",
     )
     parser.add_argument(
-        "--bert-batch-size", type=int, default=8,
-        help="Batch-Größe für BERT-Inferenz (Standard: 8; bei OOM weiter reduzieren)",
+        "--bert-batch-size", type=int, default=16,
+        help="Batch-Größe für BERT-Inferenz (Standard: 16; bei OOM auf 8 reduzieren)",
+    )
+    parser.add_argument(
+        "--bert-max-length", type=int, default=128,
+        help="Max. Token-Länge für BERT (Standard: 128; Attention ist O(n²))",
     )
     args = parser.parse_args()
 
@@ -249,7 +255,9 @@ def main() -> None:
     embeddings: np.ndarray | None = None
     if not args.kein_bert:
         texte = df["beschreibung"].fillna("").tolist()
-        embeddings = extrahiere_embeddings(texte, batch_size=args.bert_batch_size)
+        embeddings = extrahiere_embeddings(
+            texte, batch_size=args.bert_batch_size, max_length=args.bert_max_length
+        )
         # Cache für spätere Nutzung
         embed_pfad = Path("data/processed/embeddings_bau.npy")
         np.save(embed_pfad, embeddings)
