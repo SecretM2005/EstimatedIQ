@@ -215,6 +215,10 @@ def main() -> None:
         "--nur-validierung", action="store_true",
         help="Nur Validierung ausführen (Modelle müssen bereits trainiert sein)",
     )
+    parser.add_argument(
+        "--bert-batch-size", type=int, default=8,
+        help="Batch-Größe für BERT-Inferenz (Standard: 8; bei OOM weiter reduzieren)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -245,7 +249,7 @@ def main() -> None:
     embeddings: np.ndarray | None = None
     if not args.kein_bert:
         texte = df["beschreibung"].fillna("").tolist()
-        embeddings = extrahiere_embeddings(texte)
+        embeddings = extrahiere_embeddings(texte, batch_size=args.bert_batch_size)
         # Cache für spätere Nutzung
         embed_pfad = Path("data/processed/embeddings_bau.npy")
         np.save(embed_pfad, embeddings)
