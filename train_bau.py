@@ -233,6 +233,10 @@ def main() -> None:
         "--max-jahr", type=int, default=None,
         help="Nur Daten bis einschließlich diesem Jahr verwenden",
     )
+    parser.add_argument(
+        "--kein-fallback-gewerk", action="store_true",
+        help="Zeilen mit Gewerk 'Bauarbeiten allgemein' ausschließen (62%% Fallback-Kategorie)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -263,6 +267,12 @@ def main() -> None:
         vor = len(df)
         df = df[df["jahr"] <= args.max_jahr].reset_index(drop=True)
         logger.info("Jahresfilter ≤%d: %d → %d Zeilen", args.max_jahr, vor, len(df))
+
+    if args.kein_fallback_gewerk:
+        vor = len(df)
+        df = df[df["gewerk"] != "Bauarbeiten allgemein"].reset_index(drop=True)
+        logger.info("Fallback-Gewerk entfernt: %d → %d Zeilen (%.0f%% behalten)",
+                    vor, len(df), 100 * len(df) / vor if vor else 0)
 
     if args.max_samples and len(df) > args.max_samples:
         df = df.sample(args.max_samples, random_state=42).reset_index(drop=True)
