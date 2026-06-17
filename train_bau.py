@@ -32,16 +32,17 @@ PARQUET_PFAD = Path("data/processed/notices_bau.parquet")
 
 def extrahiere_embeddings(texte: list[str], batch_size: int = 16, max_length: int = 128) -> np.ndarray:
     """
-    Extrahiert [CLS]-Token-Embeddings via bert-base-german-cased.
+    Extrahiert [CLS]-Token-Embeddings via distilbert-base-german-cased.
     Gibt numpy-Array der Form (n_samples, 768) zurück.
-    max_length=128 reicht für kurze Vergabetexte und ist 16× schneller als 512.
+    DistilBERT ist ~60% schneller als BERT-base bei 97% der Qualität.
     """
     from transformers import AutoTokenizer, AutoModel
     import torch
 
-    logger.info("[BERT] Lade Modell bert-base-german-cased...")
-    tokenizer = AutoTokenizer.from_pretrained("bert-base-german-cased")
-    modell    = AutoModel.from_pretrained("bert-base-german-cased")
+    modell_name = "distilbert-base-german-cased"
+    logger.info("[BERT] Lade Modell %s...", modell_name)
+    tokenizer = AutoTokenizer.from_pretrained(modell_name)
+    modell    = AutoModel.from_pretrained(modell_name)
     modell.eval()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
