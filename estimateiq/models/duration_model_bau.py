@@ -15,6 +15,7 @@ Artefakte (unter models/):
 
 import logging
 import pickle
+import re
 from pathlib import Path
 
 import matplotlib
@@ -39,7 +40,53 @@ NUMERISCHE_FEATURES  = [
     "latitude", "longitude", "bbsr_index",
     "ist_metropole", "ist_grossstadt",
     "beschreibung_laenge", "jahr",
+    "flaeche_m2", "einheiten", "laenge_m", "hat_flaeche",
 ]
+
+
+def _extrahiere_flaeche(text: str) -> float:
+    for pat in [r"(\d[\d.]*)\s*[,.]?\d*\s*(?:m\s*[²2]|qm|Quadratmeter)"]:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            try:
+                val = float(m.group(1).replace(".", "").replace(",", ""))
+                if 10 <= val <= 500_000:
+                    return val
+            except ValueError:
+                pass
+    return 0.0
+
+
+def _extrahiere_einheiten(text: str) -> float:
+    m = re.search(r"(\d+)\s*(?:Wohneinheit|Wohnung|Appartement|WE\b)", text, re.IGNORECASE)
+    if m:
+        try:
+            val = float(m.group(1))
+            if 1 <= val <= 10_000:
+                return val
+        except ValueError:
+            pass
+    return 0.0
+
+
+def _extrahiere_laenge(text: str) -> float:
+    m = re.search(r"(\d+(?:[,.]\d+)?)\s*km", text, re.IGNORECASE)
+    if m:
+        try:
+            val = float(m.group(1).replace(",", ".")) * 1000
+            if 50 <= val <= 200_000:
+                return val
+        except ValueError:
+            pass
+    m = re.search(r"(\d+)\s*(?:lm|lfm|Laufmeter)", text, re.IGNORECASE)
+    if m:
+        try:
+            val = float(m.group(1))
+            if 10 <= val <= 50_000:
+                return val
+        except ValueError:
+            pass
+    return 0.0
 
 
 def _feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
@@ -47,6 +94,11 @@ def _feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     df["beschreibung_laenge"] = df["beschreibung"].str.len().fillna(0).astype("float32")
     df["ist_metropole"]  = df.get("ist_metropole",  pd.Series(False, index=df.index)).fillna(False).astype(float)
     df["ist_grossstadt"] = df.get("ist_grossstadt", pd.Series(False, index=df.index)).fillna(False).astype(float)
+    texte = df["beschreibung"].fillna("")
+    df["flaeche_m2"]  = texte.apply(_extrahiere_flaeche).astype("float32")
+    df["einheiten"]   = texte.apply(_extrahiere_einheiten).astype("float32")
+    df["laenge_m"]    = texte.apply(_extrahiere_laenge).astype("float32")
+    df["hat_flaeche"] = (df["flaeche_m2"] > 0).astype("float32")
     return df
 
 
