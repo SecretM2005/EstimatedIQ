@@ -25,7 +25,8 @@ import numpy as np
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -140,6 +141,12 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+_STATIC_DIR = Path(__file__).parent / "static"
+
+@app.get("/", include_in_schema=False)
+async def root():
+    return FileResponse(_STATIC_DIR / "index.html")
 
 
 # ---------------------------------------------------------------------------
