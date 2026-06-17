@@ -840,23 +840,28 @@ async def bau_estimate(req: BauEstimateRequest):
     laenge    = _regex_zahl(req.beschreibung,
                     r"(\d+(?:[,.]\d+)?)\s*km", mult=1000, lo=50, hi=200_000)
 
+    import math as _math
+    _bbsr_val = bbsr
+    _log_fl   = _math.log1p(flaeche)
     df_input = pd.DataFrame([{
-        "beschreibung":      req.beschreibung,
-        "gewerk":            gewerk,
-        "projekttyp":        projekttyp,
-        "land":              land,
-        "bundesland":        bundesland,
-        "latitude":          float(geo.get("lat") or 51.16),
-        "longitude":         float(geo.get("lon") or 10.45),
-        "bbsr_index":        bbsr,
-        "ist_metropole":     bool(geo.get("ist_metropole", False)),
-        "ist_grossstadt":    bool(geo.get("ist_grossstadt", False)),
-        "jahr":              2024,
-        "flaeche_m2":        flaeche,
-        "einheiten":         einheiten,
-        "laenge_m":          laenge,
-        "hat_flaeche":       float(flaeche > 0),
-        "beschreibung_laenge": float(len(req.beschreibung)),
+        "beschreibung":               req.beschreibung,
+        "gewerk":                     gewerk,
+        "projekttyp":                 projekttyp,
+        "land":                       land,
+        "bundesland":                 bundesland,
+        "latitude":                   float(geo.get("lat") or 51.16),
+        "longitude":                  float(geo.get("lon") or 10.45),
+        "bbsr_index":                 _bbsr_val,
+        "ist_metropole":              bool(geo.get("ist_metropole", False)),
+        "ist_grossstadt":             bool(geo.get("ist_grossstadt", False)),
+        "jahr":                       2024,
+        "flaeche_m2":                 flaeche,
+        "einheiten":                  einheiten,
+        "laenge_m":                   laenge,
+        "hat_flaeche":                float(flaeche > 0),
+        "beschreibung_laenge":        float(len(req.beschreibung)),
+        "log_flaeche":                _log_fl,
+        "flaeche_je_m2_budget_proxy": _log_fl * _bbsr_val / 100.0,
     }])
 
     # BERT Embeddings (lazy load, dann gecacht)
