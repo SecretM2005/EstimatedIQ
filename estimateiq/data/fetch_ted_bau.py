@@ -7,6 +7,7 @@ Extrahiert zusätzlich Auftraggeber-Ort und PLZ für Geocoding.
 Speichert: data/raw_notices_bau_{YYYY}.jsonl
 """
 
+import calendar
 import json
 import logging
 import time
@@ -115,18 +116,45 @@ class TedBauApiClient:
         self.max_retries = max_retries
         self.client      = httpx.Client(timeout=timeout)
 
-    def _build_query(self, countries: list[str] | None = None, year: int | None = None) -> str:
-        """Baut Expert-Query für Bau-CPV-Codes (PC=45*)."""
+    def _build_query(
+        self,
+        countries: list[str] | None = None,
+        year: int | None = None,
+        month: int | None = None,
+    ) -> str:
+        """Baut Expert-Query für Bau-CPV-Codes (PC=45*). month=1-12 für Monatsabfragen."""
         filter_teile = ["PC=45*"]
 
         if countries:
             laender = " OR ".join(f"buyer-country={c}" for c in countries)
             filter_teile.append(f"({laender})")
 
-        if year:
+        if year and month:
+            letzter_tag = calendar.monthrange(year, month)[1]
+            filter_teile.append(
+                f"PD>={year}{month:02d}01 AND PD<={year}{month:02d}{letzter_tag:02d}"
+            )
+        elif year:
             filter_teile.append(f"PD>={year}0101 AND PD<={year}1231")
 
         return " AND ".join(filter_teile)
+
+    def _get_total_count(self, query: str) -> int:
+        """Ermittelt Gesamttrefferzahl mit einer minimalen Anfrage."""
+        payload = {
+            "query":          query,
+            "fields":         ["publication-number"],
+            "page":           1,
+            "limit":          1,
+            "paginationMode": "PAGE_NUMBER",
+        }
+        try:
+            response = self.client.post(TED_SEARCH_URL, json=payload)
+            response.raise_for_status()
+            return int(response.json().get("totalNoticeCount", 0))
+        except Exception as exc:
+            logger.warning("Trefferanzahl konnte nicht ermittelt werden: %s", exc)
+            return 0
 
     def _request_page(self, query: str, page: int) -> dict:
         """Einzelne paginierte Anfrage mit Retry-Logik."""
@@ -328,17 +356,14 @@ class TedBauApiClient:
             raw              = raw,
         )
 
-    def fetch_notices(
+    def _fetch_query(
         self,
-        countries: list[str] | None = None,
-        year: int | None = None,
+        query: str,
         max_pages: int | None = None,
         nur_vergaben: bool = False,
     ) -> Iterator[TedBauNotice]:
-        """Generator: Liefert alle Bau-Ausschreibungen seitenweise."""
-        query = self._build_query(countries=countries, year=year)
+        """Paginierter Abruf für eine einzelne Query (bleibt unter dem 15k-Fenster)."""
         logger.info("TED-Bau-Abfrage: %s", query)
-
         page = 1
         total_geladen = 0
 
@@ -368,10 +393,63 @@ class TedBauApiClient:
 
             if max_pages and page >= max_pages:
                 break
-            if total and total_geladen >= total:
+
+            naechstes_fenster = (page + 1) * self.page_size
+            if naechstes_fenster > 14_900:
+                logger.warning(
+                    "15k-Fenstergrenze erreicht (Seite %d, Fenster %d). Abfrage beendet.",
+                    page, naechstes_fenster,
+                )
                 break
 
             page += 1
+
+    def fetch_notices(
+        self,
+        countries: list[str] | None = None,
+        year: int | None = None,
+        max_pages: int | None = None,
+        nur_vergaben: bool = False,
+    ) -> Iterator[TedBauNotice]:
+        """
+        Generator: Liefert alle Bau-Ausschreibungen.
+        Bei Jahresabfragen mit >14.900 Treffern wird automatisch in
+        Monatsabfragen aufgeteilt (TED-API-Limit: Seite × Limit ≤ 15.000).
+        """
+        if max_pages:
+            # Testmodus: direkte jährliche Abfrage ohne Vorprüfung
+            yield from self._fetch_query(
+                self._build_query(countries=countries, year=year),
+                max_pages=max_pages,
+                nur_vergaben=nur_vergaben,
+            )
+            return
+
+        query_jahr = self._build_query(countries=countries, year=year)
+        total = self._get_total_count(query_jahr)
+        logger.info("Jahresabfrage '%s': %d Treffer gesamt.", query_jahr, total)
+
+        if total <= 14_900:
+            yield from self._fetch_query(query_jahr, nur_vergaben=nur_vergaben)
+        else:
+            logger.info(
+                "Überschreitet 15k-Limit (%d) – wechsle zu Monatsabfragen.", total
+            )
+            for monat in range(1, 13):
+                query_monat = self._build_query(
+                    countries=countries, year=year, month=monat
+                )
+                monat_total = self._get_total_count(query_monat)
+                logger.info("  Monat %02d/%d: %d Treffer", monat, year or 0, monat_total)
+                if monat_total == 0:
+                    continue
+                if monat_total > 14_900:
+                    logger.warning(
+                        "Monat %02d/%d überschreitet ebenfalls 15k (%d) – "
+                        "Abfrage wird teilweise abgeschnitten!",
+                        monat, year or 0, monat_total,
+                    )
+                yield from self._fetch_query(query_monat, nur_vergaben=nur_vergaben)
 
     def close(self):
         self.client.close()
