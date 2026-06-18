@@ -42,6 +42,9 @@ NUMERISCHE_FEATURES  = [
     "beschreibung_laenge", "jahr",
     "flaeche_m2", "einheiten", "laenge_m", "hat_flaeche",
     "log_flaeche", "flaeche_je_m2_budget_proxy",
+    # Direkte (nicht-log) Skalierungsfeatures
+    "flaeche_bbsr_raw", "einheiten_bbsr", "log_einheiten",
+    "n_gewerke_in_text", "is_generalsanierung", "is_neubau",
 ]
 
 
@@ -104,6 +107,22 @@ def _feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     df["log_flaeche"] = _np.log1p(df["flaeche_m2"]).astype("float32")
     bbsr = df.get("bbsr_index", pd.Series(100.0, index=df.index)).fillna(100.0).astype(float)
     df["flaeche_je_m2_budget_proxy"] = (df["log_flaeche"] * bbsr / 100.0).astype("float32")
+    df["flaeche_bbsr_raw"] = (df["flaeche_m2"] * bbsr / 100.0).astype("float32")
+    df["einheiten_bbsr"]   = (df["einheiten"]  * bbsr / 100.0).astype("float32")
+    df["log_einheiten"]    = _np.log1p(df["einheiten"]).astype("float32")
+    _texte_lower = texte.str.lower()
+    _gewerke_kw = ["elektro", "sanitär", "heizung", "lüftung", "klima", "dach",
+                   "fassade", "fenster", "boden", "fliesen", "maler", "putz"]
+    df["n_gewerke_in_text"] = sum(
+        _texte_lower.str.contains(kw, regex=False).astype("float32")
+        for kw in _gewerke_kw
+    ).astype("float32")
+    df["is_generalsanierung"] = _texte_lower.str.contains(
+        "generalsanierung|komplettsanierung|kernsanierung|vollsanierung", regex=True
+    ).astype("float32")
+    df["is_neubau"] = _texte_lower.str.contains(
+        r"\bneubau\b|neuerrichtung|errichtung\s+eines", regex=True
+    ).astype("float32")
     return df
 
 
