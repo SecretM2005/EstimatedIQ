@@ -39,6 +39,7 @@ NUMERISCHE_FEATURES  = [
     "ist_metropole", "ist_grossstadt",
     "beschreibung_laenge", "jahr",
     "flaeche_m2", "einheiten", "laenge_m", "hat_flaeche",
+    "log_flaeche", "flaeche_je_m2_budget_proxy",
 ]
 
 
@@ -105,6 +106,12 @@ def _feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     df["einheiten"]   = texte.apply(_extrahiere_einheiten).astype("float32")
     df["laenge_m"]    = texte.apply(_extrahiere_laenge).astype("float32")
     df["hat_flaeche"] = (df["flaeche_m2"] > 0).astype("float32")
+    # log-Fläche: linearisiert den Effekt kleiner vs. großer Projekte
+    df["log_flaeche"] = np.log1p(df["flaeche_m2"]).astype("float32")
+    # Näherungsweise Kosten/m² Proxy: trennt kleine Handwerks- von Großprojekten
+    # (ohne Budget-Info, nur als Feature-Signal aus Fläche × BBSR)
+    bbsr = df.get("bbsr_index", pd.Series(100.0, index=df.index)).fillna(100.0).astype(float)
+    df["flaeche_je_m2_budget_proxy"] = (df["log_flaeche"] * bbsr / 100.0).astype("float32")
     return df
 
 

@@ -23,21 +23,43 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-PARQUET_PFAD = Path("data/processed/notices_bau.parquet")
+PARQUET_PFAD        = Path("data/processed/notices_bau.parquet")
+CHECKPOINT_EMBED    = Path("data/processed/embeddings_bau_checkpoint.npy")
+CHECKPOINT_PROGRESS = Path("data/processed/embeddings_bau_checkpoint.progress")
 
 
 # ---------------------------------------------------------------------------
-# BERT-Embeddings
+# BERT-Embeddings (mit Checkpoint/Resume)
 # ---------------------------------------------------------------------------
 
 def extrahiere_embeddings(texte: list[str], batch_size: int = 16, max_length: int = 128) -> np.ndarray:
     """
     Extrahiert [CLS]-Token-Embeddings via distilbert-base-german-cased.
     Gibt numpy-Array der Form (n_samples, 768) zurück.
-    DistilBERT ist ~60% schneller als BERT-base bei 97% der Qualität.
+    Speichert alle 50 Batches einen Checkpoint – bei Abbruch dort weitermachen.
     """
     from transformers import AutoTokenizer, AutoModel
     import torch
+
+    # ── Checkpoint laden (falls vorhanden) ──────────────────────────────────
+    start_idx = 0
+    vorherige: np.ndarray | None = None
+
+    if CHECKPOINT_EMBED.exists() and CHECKPOINT_PROGRESS.exists():
+        try:
+            gespeichert = int(CHECKPOINT_PROGRESS.read_text().strip())
+            ckpt = np.load(CHECKPOINT_EMBED)
+            if ckpt.shape[0] == gespeichert and gespeichert < len(texte):
+                vorherige = ckpt
+                start_idx = gespeichert
+                logger.info(
+                    "[BERT] Checkpoint geladen: %d/%d Texte bereits verarbeitet, fahre fort.",
+                    start_idx, len(texte),
+                )
+            else:
+                logger.warning("[BERT] Checkpoint passt nicht zur aktuellen Datenmenge – starte von vorne.")
+        except Exception as e:
+            logger.warning("[BERT] Checkpoint ungültig (%s) – starte von vorne.", e)
 
     modell_name = "distilbert-base-german-cased"
     logger.info("[BERT] Lade Modell %s...", modell_name)
@@ -47,12 +69,13 @@ def extrahiere_embeddings(texte: list[str], batch_size: int = 16, max_length: in
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     modell  = modell.to(device)
-    logger.info("[BERT] Gerät: %s | %d Texte | Batch=%d | MaxLen=%d",
-                device, len(texte), batch_size, max_length)
+    logger.info("[BERT] Gerät: %s | %d verbleibende Texte | Batch=%d | MaxLen=%d",
+                device, len(texte) - start_idx, batch_size, max_length)
 
-    alle_embeddings: list[np.ndarray] = []
+    neue_embeddings: list[np.ndarray] = []
+    batch_nr = 0
 
-    for i in range(0, len(texte), batch_size):
+    for i in range(start_idx, len(texte), batch_size):
         batch = texte[i : i + batch_size]
         encoded = tokenizer(
             batch,
@@ -65,14 +88,35 @@ def extrahiere_embeddings(texte: list[str], batch_size: int = 16, max_length: in
         with torch.inference_mode():
             ausgabe = modell(**encoded)
 
-        cls_tokens = ausgabe.last_hidden_state[:, 0, :].cpu().numpy()
-        alle_embeddings.append(cls_tokens)
+        neue_embeddings.append(ausgabe.last_hidden_state[:, 0, :].cpu().numpy())
+        batch_nr += 1
 
-        if (i // batch_size) % 10 == 0:
-            logger.info("[BERT] %d/%d Texte verarbeitet...", min(i + batch_size, len(texte)), len(texte))
+        if batch_nr % 10 == 0:
+            logger.info("[BERT] %d/%d Texte verarbeitet...", i + len(batch), len(texte))
 
-    embeddings = np.vstack(alle_embeddings)
+        # ── Checkpoint alle 50 Batches (~800 Texte, ~80 Sek.) ───────────────
+        if batch_nr % 50 == 0:
+            bisher = (
+                np.vstack([vorherige] + neue_embeddings)
+                if vorherige is not None
+                else np.vstack(neue_embeddings)
+            )
+            np.save(CHECKPOINT_EMBED, bisher)
+            CHECKPOINT_PROGRESS.write_text(str(bisher.shape[0]))
+            logger.info("[BERT] Checkpoint gespeichert: %d/%d Texte.", bisher.shape[0], len(texte))
+
+    # ── Alle Embeddings zusammenführen ───────────────────────────────────────
+    embeddings = (
+        np.vstack([vorherige] + neue_embeddings)
+        if vorherige is not None
+        else np.vstack(neue_embeddings)
+    )
     logger.info("[BERT] Embeddings extrahiert: %s", embeddings.shape)
+
+    # Checkpoint aufräumen
+    CHECKPOINT_EMBED.unlink(missing_ok=True)
+    CHECKPOINT_PROGRESS.unlink(missing_ok=True)
+
     return embeddings
 
 
