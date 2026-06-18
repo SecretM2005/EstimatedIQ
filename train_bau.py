@@ -315,9 +315,27 @@ def main() -> None:
             if cache.shape[0] == len(df_voll):
                 logger.info("[BERT] Cache geladen: %s (%d × %d)", embed_pfad, *cache.shape)
                 embeddings_voll = cache
+            elif cache.shape[0] < len(df_voll):
+                # Parquet hat neue Zeilen – nur das Delta berechnen
+                n_cached = cache.shape[0]
+                n_neu    = len(df_voll) - n_cached
+                logger.info(
+                    "[BERT] Cache unvollständig (%d/%d) – berechne %d neue Zeilen (~%d Min).",
+                    n_cached, len(df_voll), n_neu, max(1, n_neu // 60),
+                )
+                texte_neu = df_voll["beschreibung"].fillna("").tolist()[n_cached:]
+                neue_embed = extrahiere_embeddings(
+                    texte_neu,
+                    batch_size=args.bert_batch_size,
+                    max_length=args.bert_max_length,
+                )
+                embeddings_voll = np.vstack([cache, neue_embed])
+                np.save(embed_pfad, embeddings_voll)
+                logger.info("[BERT] Cache aktualisiert: %d × %d → %s",
+                            *embeddings_voll.shape, embed_pfad)
             else:
                 logger.warning(
-                    "[BERT] Cache veraltet (%d Zeilen vs. %d im Parquet) – neu berechnen.",
+                    "[BERT] Cache (%d Zeilen) größer als Parquet (%d) – neu berechnen.",
                     cache.shape[0], len(df_voll),
                 )
         if embeddings_voll is None:
