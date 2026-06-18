@@ -948,11 +948,11 @@ async def bau_health():
         "status":           "ok" if (kosten_ok and dauer_ok) else "modell_fehlt",
         "modell_version":   BAU_MODELL_VERSION,
         "trainiert_am":     trainiert_am,
-        "n_trainingsdaten": 12_322,
-        "kosten_mdape":     0.611,
-        "dauer_mdape":      0.298,
+        "n_trainingsdaten": 19_818,
+        "kosten_mdape":     0.648,
+        "dauer_mdape":      0.342,
         "bekannte_schwaechen": [
-            "Großprojekte > 2 Mio € werden unterschätzt",
-            "TGA-Laufzeiten (Elektro, Heizung, Sanitär) werden überschätzt",
+            "Großprojekte > 2 Mio € werden unterschätzt (Regression zur Mitte)",
+            "Kosten: R²=0.20 – 80 % der Varianz durch unbeobachtete Faktoren erklärt",
         ],
     }

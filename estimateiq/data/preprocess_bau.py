@@ -268,6 +268,7 @@ def _konvertiere_zu_dataframe(datensaetze: list[dict]) -> pd.DataFrame:
         "text_zu_kurz": 0,
         "kein_cpv":     0,  # nur für Statistik, kein Filterkriterium
         "akzeptiert":   0,
+        "synthetisch":  0,  # Zähler für synthetische Datensätze
     }
 
     for rec in datensaetze:
@@ -295,7 +296,8 @@ def _konvertiere_zu_dataframe(datensaetze: list[dict]) -> pd.DataFrame:
         else:
             kombi = titel_kurz
 
-        if len(kombi) < BESCHREIBUNG_MIN_ZEICHEN:
+        ist_synthetisch = rec.get("datenquelle") == "synthetic_small"
+        if len(kombi) < BESCHREIBUNG_MIN_ZEICHEN and not ist_synthetisch:
             zaehler["text_zu_kurz"] += 1
             continue
 
@@ -314,6 +316,7 @@ def _konvertiere_zu_dataframe(datensaetze: list[dict]) -> pd.DataFrame:
 
         land = (rec.get("country") or "").upper().strip() or None
 
+        datenquelle = rec.get("datenquelle", "ted_bau")
         zeilen.append({
             "beschreibung":      kombi,
             "budget_eur":        _budget_zu_eur(rec.get("estimated_value"), rec.get("currency")),
@@ -324,15 +327,17 @@ def _konvertiere_zu_dataframe(datensaetze: list[dict]) -> pd.DataFrame:
             "land":              land,
             "auftraggeber_ort":  rec.get("auftraggeber_ort"),
             "auftraggeber_plz":  rec.get("auftraggeber_plz"),
-            "datenquelle":       rec.get("datenquelle", "ted_bau"),
+            "datenquelle":       datenquelle,
             "jahr":              jahr,
         })
         zaehler["akzeptiert"] += 1
+        if datenquelle == "synthetic_small":
+            zaehler["synthetisch"] += 1
 
     logger.info(
-        "[Konvertierung] Eingabe: %d | Duplikat: %d | Text zu kurz: %d | Kein CPV (→Default): %d | Akzeptiert: %d",
+        "[Konvertierung] Eingabe: %d | Duplikat: %d | Text zu kurz: %d | Kein CPV (→Default): %d | Akzeptiert: %d (davon synthetisch: %d)",
         len(datensaetze), zaehler["duplikat"],
-        zaehler["text_zu_kurz"], zaehler["kein_cpv"], zaehler["akzeptiert"],
+        zaehler["text_zu_kurz"], zaehler["kein_cpv"], zaehler["akzeptiert"], zaehler["synthetisch"],
     )
 
     return pd.DataFrame(zeilen)
