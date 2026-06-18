@@ -296,7 +296,7 @@ def _konvertiere_zu_dataframe(datensaetze: list[dict]) -> pd.DataFrame:
         else:
             kombi = titel_kurz
 
-        ist_synthetisch = rec.get("datenquelle") == "synthetic_small"
+        ist_synthetisch = rec.get("datenquelle", "").startswith("synthetic")
         if len(kombi) < BESCHREIBUNG_MIN_ZEICHEN and not ist_synthetisch:
             zaehler["text_zu_kurz"] += 1
             continue
@@ -331,7 +331,7 @@ def _konvertiere_zu_dataframe(datensaetze: list[dict]) -> pd.DataFrame:
             "jahr":              jahr,
         })
         zaehler["akzeptiert"] += 1
-        if datenquelle == "synthetic_small":
+        if datenquelle.startswith("synthetic"):
             zaehler["synthetisch"] += 1
 
     logger.info(
