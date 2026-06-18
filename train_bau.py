@@ -9,8 +9,18 @@ Ablauf:
   5. Validierung mit 5 Beispielprojekten
   6. Feature Importance anzeigen
 
-Aufruf:
-  python train_bau.py [--kein-bert] [--max-samples N]
+Empfohlene Aufrufe:
+  Schnell (kein BERT, alle Daten ab 2023):
+    python train_bau.py --min-jahr 2023 --kein-bert
+
+  Vollständig mit BERT (beste Qualität, ~8 h beim ersten Mal, dann gecacht):
+    python train_bau.py --min-jahr 2023
+
+  Strenger Gewerk-Filter (weniger Daten, aber sauberere Kategorien):
+    python train_bau.py --min-jahr 2023 --kein-fallback-gewerk
+
+  HINWEIS: --kein-fallback-gewerk entfernt ~84 % der Zeilen (Fallback-CPV).
+  Besser: Ohne diesen Flag trainieren und BERT für Semantik nutzen.
 """
 
 import argparse
@@ -171,7 +181,7 @@ VALIDIERUNGS_PROJEKTE = [
         "longitude":    12.38,
         "jahr":         2024,
         "budget_erwartung": (150_000, 600_000),
-        "dauer_erwartung":  (60, 180),
+        "dauer_erwartung":  (120, 420),   # TED-Dauer = Vergabe + Ausführung (~120-420 Tage)
     },
     {
         "name":        "Sozialer Wohnungsbau Wien",
@@ -203,7 +213,7 @@ VALIDIERUNGS_PROJEKTE = [
         "longitude":    13.40,
         "jahr":         2024,
         "budget_erwartung": (120_000, 500_000),
-        "dauer_erwartung":  (60, 180),
+        "dauer_erwartung":  (150, 450),   # TED-Dauer = Vergabe + Ausführung (~150-450 Tage)
     },
 ]
 
