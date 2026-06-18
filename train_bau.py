@@ -294,20 +294,68 @@ def main() -> None:
         validiere_modelle(mit_bert=not args.kein_bert)
         return
 
-    # ── 1. Daten laden ───────────────────────────────────────────────────────
+    # ── 1. Daten laden (VOLLSTÄNDIG – BERT vor Filtern) ─────────────────────
     if not PARQUET_PFAD.exists():
         logger.error("Parquet nicht gefunden: %s", PARQUET_PFAD)
         logger.error("Bitte zuerst: python -m estimateiq.data.preprocess_bau")
         sys.exit(1)
 
     logger.info("Lade %s ...", PARQUET_PFAD)
-    df = pd.read_parquet(PARQUET_PFAD)
-    logger.info("Geladen: %d Zeilen, %d Spalten", len(df), len(df.columns))
+    df_voll = pd.read_parquet(PARQUET_PFAD)
+    logger.info("Geladen: %d Zeilen, %d Spalten", len(df_voll), len(df_voll.columns))
+    df_voll["_orig_idx"] = range(len(df_voll))
+
+    # ── 2. BERT-Embeddings auf vollem Datensatz (gecacht) ────────────────────
+    embed_pfad          = Path("data/processed/embeddings_bau.npy")
+    embeddings_voll: np.ndarray | None = None
+
+    if not args.kein_bert:
+        if embed_pfad.exists():
+            cache = np.load(embed_pfad)
+            if cache.shape[0] == len(df_voll):
+                logger.info("[BERT] Cache geladen: %s (%d × %d)", embed_pfad, *cache.shape)
+                embeddings_voll = cache
+            elif cache.shape[0] < len(df_voll):
+                # Parquet hat neue Zeilen – nur das Delta berechnen
+                n_cached = cache.shape[0]
+                n_neu    = len(df_voll) - n_cached
+                logger.info(
+                    "[BERT] Cache unvollständig (%d/%d) – berechne %d neue Zeilen (~%d Min).",
+                    n_cached, len(df_voll), n_neu, max(1, n_neu // 60),
+                )
+                texte_neu = df_voll["beschreibung"].fillna("").tolist()[n_cached:]
+                neue_embed = extrahiere_embeddings(
+                    texte_neu,
+                    batch_size=args.bert_batch_size,
+                    max_length=args.bert_max_length,
+                )
+                embeddings_voll = np.vstack([cache, neue_embed])
+                np.save(embed_pfad, embeddings_voll)
+                logger.info("[BERT] Cache aktualisiert: %d × %d → %s",
+                            *embeddings_voll.shape, embed_pfad)
+            else:
+                logger.warning(
+                    "[BERT] Cache (%d Zeilen) größer als Parquet (%d) – neu berechnen.",
+                    cache.shape[0], len(df_voll),
+                )
+        if embeddings_voll is None:
+            texte = df_voll["beschreibung"].fillna("").tolist()
+            embeddings_voll = extrahiere_embeddings(
+                texte, batch_size=args.bert_batch_size, max_length=args.bert_max_length
+            )
+            np.save(embed_pfad, embeddings_voll)
+            logger.info("[BERT] Embeddings gecacht: %s", embed_pfad)
+
+    # ── 3. Qualitätsfilter NACH BERT ──────────────────────────────────────────
+    df = df_voll.copy()
 
     if args.min_jahr:
         vor = len(df)
-        df = df[df["jahr"] >= args.min_jahr].reset_index(drop=True)
-        logger.info("Jahresfilter ≥%d: %d → %d Zeilen", args.min_jahr, vor, len(df))
+        # Synthetische Daten immer behalten (datenquelle='synthetic_small')
+        maske = (df["jahr"] >= args.min_jahr) | (df.get("datenquelle", "") == "synthetic_small")
+        df = df[maske].reset_index(drop=True)
+        logger.info("Jahresfilter ≥%d (synthetische Daten ausgenommen): %d → %d Zeilen",
+                    args.min_jahr, vor, len(df))
     if args.max_jahr:
         vor = len(df)
         df = df[df["jahr"] <= args.max_jahr].reset_index(drop=True)
@@ -315,41 +363,37 @@ def main() -> None:
 
     if args.kein_fallback_gewerk:
         vor = len(df)
-        df = df[df["gewerk"] != "Bauarbeiten allgemein"].reset_index(drop=True)
-        logger.info("Fallback-Gewerk entfernt: %d → %d Zeilen (%.0f%% behalten)",
+        fallback = {"Bauarbeiten allgemein", "Sonstiges"}
+        df = df[~df["gewerk"].isin(fallback)].reset_index(drop=True)
+        logger.info("Fallback-Gewerke entfernt: %d → %d Zeilen (%.0f%% behalten)",
                     vor, len(df), 100 * len(df) / vor if vor else 0)
 
     if args.max_samples and len(df) > args.max_samples:
         df = df.sample(args.max_samples, random_state=42).reset_index(drop=True)
         logger.info("Eingeschränkt auf %d Samples.", args.max_samples)
 
-    # ── 2. BERT-Embeddings (optional) ───────────────────────────────────────
+    # Embeddings auf gefilterte Zeilen einschränken (Index aus Voll-Datensatz)
     embeddings: np.ndarray | None = None
-    if not args.kein_bert:
-        texte = df["beschreibung"].fillna("").tolist()
-        embeddings = extrahiere_embeddings(
-            texte, batch_size=args.bert_batch_size, max_length=args.bert_max_length
-        )
-        # Cache für spätere Nutzung
-        embed_pfad = Path("data/processed/embeddings_bau.npy")
-        np.save(embed_pfad, embeddings)
-        logger.info("[BERT] Embeddings gecacht: %s", embed_pfad)
+    if embeddings_voll is not None:
+        orig_idx = df["_orig_idx"].values
+        embeddings = embeddings_voll[orig_idx]
+        logger.info("[BERT] Embeddings auf %d gefilterte Zeilen eingeschränkt.", len(orig_idx))
 
-    # ── 3. Kostenmodell ──────────────────────────────────────────────────────
+    # ── 5. Kostenmodell ──────────────────────────────────────────────────────
     from estimateiq.models.cost_model_bau import train as train_kosten
     logger.info("\n" + "─" * 50)
     logger.info("  Training: Kostenmodell (budget_eur)")
     logger.info("─" * 50)
     metriken_kosten = train_kosten(df, embeddings=embeddings)
 
-    # ── 4. Laufzeitmodell ────────────────────────────────────────────────────
+    # ── 6. Laufzeitmodell ────────────────────────────────────────────────────
     from estimateiq.models.duration_model_bau import train as train_dauer
     logger.info("\n" + "─" * 50)
     logger.info("  Training: Laufzeitmodell (dauer_tage)")
     logger.info("─" * 50)
     metriken_dauer = train_dauer(df, embeddings=embeddings)
 
-    # ── 5. Ergebnis-Zusammenfassung ──────────────────────────────────────────
+    # ── 7. Ergebnis-Zusammenfassung ──────────────────────────────────────────
     print("\n" + "═" * 54)
     print("  EstimateIQ Bau – Trainings-Ergebnis")
     print("═" * 54)
@@ -364,9 +408,13 @@ def main() -> None:
     print(f"    MdAPE:      {metriken_dauer['mdape']:>13.1f} %")
     print(f"    Trainings-N:{metriken_dauer['n_train']:>14,}")
     print(f"\n  BERT-Embeddings: {'Ja' if not args.kein_bert else 'Nein'}")
+    if args.min_jahr:
+        print(f"  Jahresfilter:    ≥{args.min_jahr} (+ synthetische Daten)")
+    if args.kein_fallback_gewerk:
+        print(f"  Fallback-Gewerke: entfernt (Bauarbeiten allgemein, Sonstiges)")
     print("═" * 54 + "\n")
 
-    # ── 6. Validierung ───────────────────────────────────────────────────────
+    # ── 8. Validierung ───────────────────────────────────────────────────────
     validiere_modelle(mit_bert=not args.kein_bert)
 
 
