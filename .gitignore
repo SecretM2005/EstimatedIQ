@@ -30,3 +30,6 @@ frontend/dist/
 # Umgebungsvariablen
 .env
 .env.local
+
+# Claude Code
+.claude/
