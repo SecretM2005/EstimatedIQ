@@ -63,6 +63,21 @@ DAUER_KALIBRIERUNG: dict[str, float] = {
     "gross":  0.65,   # Enterprise (inkl. Rollout): ~65 %
 }
 
+# Kalibrierungsfaktoren für spezialisierte Modelle
+# Klein: GitHub-Daten (echte Dev-Dauern), Mittel: gemischt, Gross: TED mit Vergabe-Puffer
+KALIBRIERUNG_SPEZIALISIERT: dict[str, float] = {
+    "klein":  1.0,   # GitHub-Daten: echte Dev-Dauern, kein Abzug
+    "mittel": 0.85,  # Gemischte Daten: leichter Puffer-Abzug
+    "gross":  0.65,  # TED-Daten: Vergabe-Puffer abziehen
+}
+
+# Bevorzugte Datenquelle für Inferenz je Grössenklasse
+DATENQUELLE_MODELL: dict[str, str] = {
+    "klein":  "github",
+    "mittel": "github",
+    "gross":  "ted",
+}
+
 # Overhead-Faktor je Projekttyp (deterministisch, kein ML)
 # Quelle: Destatis Branchenstruktur + Erfahrungswerte DACH IT-Markt
 OVERHEAD_FAKTOREN: dict[str, float] = {
@@ -192,6 +207,10 @@ class PipelineErgebnis:
     stundensatz_quelle: str = ""
     projekt_groesse: str = "mittel"
 
+    # Neu: Grössenklassifikator-Konfidenz und Auto-Erkennungs-Flag
+    groesse_konfidenz:   float = 0.0   # Konfidenz des ML-Klassifikators (0.0 = manuell/Fallback)
+    groesse_auto_erkannt: bool = False  # True wenn Grösse via Klassifikator bestimmt wurde
+
     # Rückwärtskompatibilität: overhead_faktor_p50 = tagespreis_p50 / (team × stundensatz × 8)
     @property
     def overhead_faktor_p50(self) -> float:
@@ -219,6 +238,8 @@ class PipelineErgebnis:
             "region":                self.region,
             "projekttyp":            self.projekttyp,
             "projekt_groesse":       self.projekt_groesse,
+            "groesse_konfidenz":     round(self.groesse_konfidenz, 3),
+            "groesse_auto_erkannt":  self.groesse_auto_erkannt,
         }
 
 
@@ -254,6 +275,68 @@ def _lade_v3_modell():
     return {}
 
 
+def _klassifiziere_groesse(beschreibung: str) -> tuple[str, float]:
+    """
+    Klassifiziert Projektgrösse via ML-Modell.
+
+    Gibt (groesse, konfidenz) zurück, z.B. ("klein", 0.82).
+    Fällt auf "mittel" + 0.0 zurück wenn Modell fehlt oder ein Fehler auftritt.
+
+    Args:
+        beschreibung: Projektbeschreibungstext
+
+    Returns:
+        Tupel (groesse, konfidenz): groesse in {"klein", "mittel", "gross"},
+        konfidenz zwischen 0.0 und 1.0
+    """
+    try:
+        from estimateiq.models.size_classifier import predict_proba as _proba
+        result = _proba([beschreibung])[0]
+        groesse = max(result, key=result.get)
+        konfidenz = result[groesse]
+        logger.debug(
+            "[Pipeline] ML-Grössenklassifikation: %s (Konfidenz %.1f%%) | klein=%.2f mittel=%.2f gross=%.2f",
+            groesse, konfidenz * 100,
+            result.get("klein", 0), result.get("mittel", 0), result.get("gross", 0),
+        )
+        return groesse, round(konfidenz, 3)
+    except FileNotFoundError:
+        logger.debug("[Pipeline] Grössenklassifikator nicht trainiert – Fallback auf 'mittel'.")
+        return "mittel", 0.0
+    except Exception as exc:
+        logger.debug("[Pipeline] Grössenklassifikator-Fehler: %s – Fallback auf 'mittel'.", exc)
+        return "mittel", 0.0
+
+
+def _lade_duration_modell_spezialisiert(groesse: str):
+    """
+    Versucht das spezialisierte Laufzeit-Modell für die angegebene Grössenklasse zu laden.
+
+    Args:
+        groesse: "klein", "mittel" oder "gross"
+
+    Returns:
+        predict-Funktion des spezialisierten Modells, oder None bei Fehler/nicht vorhanden.
+    """
+    try:
+        if groesse == "klein":
+            from estimateiq.models.duration_model_klein import predict as _pred
+            return _pred
+        elif groesse == "mittel":
+            from estimateiq.models.duration_model_mittel import predict as _pred
+            return _pred
+        elif groesse == "gross":
+            from estimateiq.models.duration_model_gross import predict as _pred
+            return _pred
+    except (FileNotFoundError, ImportError) as exc:
+        logger.debug(
+            "[Pipeline] Spezialisiertes Modell für '%s' nicht verfügbar (%s) – "
+            "Fallback auf generisches Modell.",
+            groesse, type(exc).__name__,
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Kern-Funktion: estimate()
 # ---------------------------------------------------------------------------
@@ -267,19 +350,24 @@ def estimate(
     dauer_override: float | None = None,
     projekt_groesse: str = "mittel",
     teamgroesse_override: float | None = None,
+    projekt_groesse_auto: bool = True,
+    groesse_konfidenz_override: float | None = None,
 ) -> PipelineErgebnis:
     """
     Schätzt Projektkosten via deterministischer Pipeline.
 
     Args:
-        beschreibung:    Volltext der Ausschreibung (min. 5 Zeichen)
-        cpv_code:        CPV-Code (Optional, Standard: 72200000)
-        land:            2-Buchstaben-Ländercode für Datensatz (DE/AT/CH)
-        region:          ISO 3166-2 für Gehaltssuche (DE, DE-BY, AT, CH, ...)
-        datenquelle:     Herkunft (ted/promise/github)
-        dauer_override:          Laufzeit in Tagen falls bekannt (überspringt Stufe 1)
-        projekt_groesse:         "klein" (Freelancer/Solo), "mittel" (Standard), "gross" (Enterprise)
-        teamgroesse_override:    Verfügbare Teamgröße in Personen; löst Assessment aus wenn gesetzt
+        beschreibung:              Volltext der Ausschreibung (min. 5 Zeichen)
+        cpv_code:                  CPV-Code (Optional, Standard: 72200000)
+        land:                      2-Buchstaben-Ländercode für Datensatz (DE/AT/CH)
+        region:                    ISO 3166-2 für Gehaltssuche (DE, DE-BY, AT, CH, ...)
+        datenquelle:               Herkunft (ted/promise/github)
+        dauer_override:            Laufzeit in Tagen falls bekannt (überspringt Stufe 1)
+        projekt_groesse:           "klein" (Freelancer/Solo), "mittel" (Standard), "gross" (Enterprise)
+        teamgroesse_override:      Verfügbare Teamgrösse in Personen; löst Assessment aus wenn gesetzt
+        projekt_groesse_auto:      True = ML-Klassifikator nutzen wenn projekt_groesse=="mittel" (Default);
+                                   False = immer den übergebenen Wert nutzen
+        groesse_konfidenz_override: Optionale manuelle Konfidenz (nur für Tests/Debugging)
 
     Returns:
         PipelineErgebnis mit allen Kostenpositionen
@@ -292,23 +380,62 @@ def estimate(
     land_upper = (land or "DE").upper()[:2]
     groesse_key = projekt_groesse if projekt_groesse in GROESSE_TEAM_FAKTOR else "mittel"
 
+    # Auto-Erkennung der Projektgrösse via ML-Klassifikator
+    # Nur wenn: Auto-Mode aktiv UND Nutzer hat keinen expliziten Wert ungleich "mittel" übergeben
+    groesse_konfidenz   = groesse_konfidenz_override or 0.0
+    groesse_auto_erkannt = False
+
+    if projekt_groesse_auto and projekt_groesse == "mittel":
+        erkannte_groesse, erkannte_konfidenz = _klassifiziere_groesse(beschreibung)
+        # Klassifikator-Ergebnis nur übernehmen wenn Konfidenz > 0 (Modell vorhanden)
+        if erkannte_konfidenz > 0:
+            groesse_key           = erkannte_groesse
+            groesse_konfidenz     = erkannte_konfidenz
+            groesse_auto_erkannt  = True
+            logger.debug(
+                "[Pipeline] Grösse auto-erkannt: %s (Konfidenz %.1f%%)",
+                groesse_key, groesse_konfidenz * 100,
+            )
+
     # ----- Schritt 1: Gesamtaufwand schätzen (Personentage) -----
     # Das ML-Modell liefert eine Laufzeit auf TED-Skala; kalibriert ergibt das
     # den Gesamtaufwand in Personentagen für den Privatmarkt.
     if dauer_override is not None:
-        effort_tage = None  # wird nach Teamgröße gesetzt (Laufzeit ist fest)
+        effort_tage = None  # wird nach Teamgrösse gesetzt (Laufzeit ist fest)
     else:
-        dur_cache = _lade_duration_modell()
+        # Spezialisiertes Modell für erkannte Grössenklasse versuchen
+        spez_datenquelle = DATENQUELLE_MODELL.get(groesse_key, datenquelle)
         df_dur = pd.DataFrame([{
             "beschreibung": beschreibung,
             "cpv_code":     cpv_str,
             "land":         land_upper,
             "projekttyp":   projekttyp,
-            "datenquelle":  datenquelle,
+            "datenquelle":  spez_datenquelle,
         }])
-        pred        = dur_cache["predict"](df_dur)
-        effort_tage = max(3.0, float(pred[0]) * DAUER_KALIBRIERUNG.get(groesse_key, 0.45))
-        logger.debug("[Pipeline] Gesamtaufwand (kalibriert): %d Personentage", round(effort_tage))
+
+        spez_predict = _lade_duration_modell_spezialisiert(groesse_key)
+        if spez_predict is not None:
+            # Spezialisiertes Modell: Kalibrierung aus KALIBRIERUNG_SPEZIALISIERT
+            kalibrierung = KALIBRIERUNG_SPEZIALISIERT.get(groesse_key, 1.0)
+            pred        = spez_predict(df_dur)
+            effort_tage = max(3.0, float(pred[0]) * kalibrierung)
+            logger.debug(
+                "[Pipeline] Spez. Laufzeit-Modell (%s): %d Tage × Kalibrierung %.2f = %d Personentage",
+                groesse_key, round(float(pred[0])), kalibrierung, round(effort_tage),
+            )
+        else:
+            # Generisches Modell als Fallback
+            dur_cache = _lade_duration_modell()
+            df_dur_generic = pd.DataFrame([{
+                "beschreibung": beschreibung,
+                "cpv_code":     cpv_str,
+                "land":         land_upper,
+                "projekttyp":   projekttyp,
+                "datenquelle":  datenquelle,
+            }])
+            pred        = dur_cache["predict"](df_dur_generic)
+            effort_tage = max(3.0, float(pred[0]) * DAUER_KALIBRIERUNG.get(groesse_key, 0.45))
+            logger.debug("[Pipeline] Generisches Modell: %d Personentage", round(effort_tage))
 
     # ----- Schritt 2: Team & Effizienz -----
     from estimateiq.models.overhead_model import extract_teamgroesse
@@ -403,6 +530,8 @@ def estimate(
         projekt_groesse      = groesse_key,
         teamgroesse_modell   = round(teamgroesse_modell, 1),
         team_assessment      = team_assessment,
+        groesse_konfidenz    = groesse_konfidenz,
+        groesse_auto_erkannt = groesse_auto_erkannt,
     )
 
 
