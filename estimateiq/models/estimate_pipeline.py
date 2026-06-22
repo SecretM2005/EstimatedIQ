@@ -124,15 +124,31 @@ def _overhead_faktor(beschreibung: str, projekttyp: str) -> float:
 
 
 def _extrahiere_technologie(beschreibung: str) -> str:
-    """Erkennt dominante Technologie aus Freitext für den Stundensatz-Lookup."""
+    """
+    Erkennt dominante Technologie aus Freitext.
+    Gibt SO-Survey-Kategorienamen zurück (für stundensaetze_stackoverflow.json).
+    """
     text = (beschreibung or "").lower()
+    # Reihenfolge: Spezifischste zuerst
     if re.search(r"\bsap\b", text):
         return "SAP"
-    for tech in ["Rust", "Kotlin", "Swift", "Python", "Scala",
-                 "TypeScript", "JavaScript", "Java", "C#", "PHP", "Ruby", "Go"]:
-        if re.search(rf"\b{re.escape(tech.lower())}\b", text):
-            return tech
-    return "all"
+    if re.search(r"\b(mobil|mobile|ios|android|flutter|swift|react[\s-]native)\b", text):
+        return "Mobile"
+    if re.search(r"\b(python|ml|machine.?learning|pytorch|tensorflow|scikit|nlp)\b", text):
+        return "Python/ML"
+    if re.search(r"\b(rust|go(?:lang)?|c\+\+)\b", text):
+        return "Backend"
+    if re.search(r"\b(c#|\.net|aspnet|blazor|dotnet)\b", text):
+        return ".NET"
+    if re.search(r"\b(typescript|angular|react|vue|node\.?js|next\.?js)\b", text):
+        return "JavaScript"
+    if re.search(r"\b(javascript|js\b)\b", text):
+        return "JavaScript"
+    if re.search(r"\b(java|spring|quarkus|jakarta)\b", text):
+        return "Java"
+    if re.search(r"\b(php|wordpress|symfony|laravel|woocommerce)\b", text):
+        return "PHP"
+    return "Allgemein"
 
 
 # ---------------------------------------------------------------------------
@@ -328,14 +344,21 @@ def estimate(
 
     technologie = _extrahiere_technologie(beschreibung)
 
+    # Stundensatz: SO-Survey-JSON → fetch_salary_data → Fallback
     try:
-        from estimateiq.data.fetch_salary_data import get_stundensatz as _get_stundensatz
-        salary_info   = _get_stundensatz(region, technologie)
-        stundensatz   = salary_info["stundensatz_median"]
+        from estimateiq.data.fetch_stackoverflow import lookup as _so_lookup
+        salary_info   = _so_lookup(region, technologie)
+        stundensatz   = salary_info["median"]
         salary_quelle = salary_info["quelle"]
     except Exception:
-        stundensatz   = 47.5
-        salary_quelle = "hardcoded_fallback"
+        try:
+            from estimateiq.data.fetch_salary_data import get_stundensatz as _get_stundensatz
+            salary_info   = _get_stundensatz(region, technologie)
+            stundensatz   = salary_info["stundensatz_median"]
+            salary_quelle = salary_info["quelle"]
+        except Exception:
+            stundensatz   = 47.5
+            salary_quelle = "hardcoded_fallback"
 
     overhead       = _overhead_faktor(beschreibung, projekttyp)
     personalkosten = dauer_tage * teamgroesse * stundensatz * STUNDEN_PRO_TAG

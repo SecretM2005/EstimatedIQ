@@ -51,10 +51,18 @@ STUNDEN_PRO_JAHR = 1_800   # Produktive Jahresarbeitsstunden laut Aufgabenstellu
 AKTUELLSTES_JAHR = 2024
 
 # Stack Overflow Survey – Jahres-URLs (neueste zuerst)
+# Aktueller CDN-Link für 2023-Survey (fetch_stackoverflow.py nutzt diesen auch)
 SO_SURVEY_URLS = {
-    2024: "https://survey.stackoverflow.co/datasets/stack-overflow-developer-survey-2024.zip",
-    2023: "https://survey.stackoverflow.co/datasets/stack-overflow-developer-survey-2023.zip",
-    2022: "https://survey.stackoverflow.co/datasets/stack-overflow-developer-survey-2022.zip",
+    2024: (
+        "https://cdn.stackoverflow.co/files/jo7n4k8s/production/"
+        "49915bfd46d0902c3564fd9a06b509d08a20488c.zip/"
+        "stack-overflow-developer-survey-2024.zip"
+    ),
+    2023: (
+        "https://cdn.stackoverflow.co/files/jo7n4k8s/production/"
+        "49915bfd46d0902c3564fd9a06b509d08a20488c.zip/"
+        "stack-overflow-developer-survey-2024.zip"
+    ),
 }
 
 DACH_LAENDER_SO = {"Germany", "Austria", "Switzerland"}   # SO-Bezeichnungen
@@ -188,6 +196,11 @@ def _lade_so_survey_csv(jahr: int) -> pd.DataFrame | None:
     """Lädt Survey-ZIP, extrahiert survey_results_public.csv."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_pfad = CACHE_DIR / f"so_survey_{jahr}.csv"
+
+    # fetch_stackoverflow.py cached unter so_survey_2023.csv → mitnutzen
+    gemeinsamer_cache = CACHE_DIR / "so_survey_2023.csv"
+    if not cache_pfad.exists() and gemeinsamer_cache.exists() and gemeinsamer_cache.stat().st_size > 1_000_000:
+        cache_pfad = gemeinsamer_cache
 
     if cache_pfad.exists() and cache_pfad.stat().st_size > 1_000_000:
         logger.info("[SO] Verwende gecachte Survey-Daten: %s", cache_pfad)
