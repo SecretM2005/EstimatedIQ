@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useLocation, Link } from 'react-router-dom'
-import { getEstimate, getSensitivity } from '../api/estimate'
+import { getEstimate } from '../api/estimate'
 import CostBar from '../components/CostBar'
 import RiskCard from '../components/RiskCard'
 import CostBreakdown from '../components/CostBreakdown'
-import SensitivitySection from '../components/SensitivitySection'
 import LoadingScreen from '../components/LoadingScreen'
 
 const fmtEUR = (n) =>
@@ -79,11 +78,9 @@ export default function Result() {
   const navigate  = useNavigate()
   const { state } = useLocation()
 
-  const [data,          setData]          = useState(null)
-  const [loading,       setLoading]       = useState(true)
-  const [error,         setError]         = useState(null)
-  const [sensitivity,   setSensitivity]   = useState(null)
-  const [sensLoading,   setSensLoading]   = useState(true)
+  const [data,    setData]    = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error,   setError]   = useState(null)
 
   const beschreibung   = state?.beschreibung   ?? ''
   const region         = state?.region         ?? 'DE'
@@ -97,7 +94,6 @@ export default function Result() {
     }
     let cancelled = false
 
-    // Hauptschätzung und Sensitivität parallel laden
     ;(async () => {
       try {
         const result = await getEstimate(beschreibung, region, teamgroesse, projektGroesse)
@@ -106,17 +102,6 @@ export default function Result() {
         if (!cancelled) setError(err.message)
       } finally {
         if (!cancelled) setLoading(false)
-      }
-    })()
-
-    ;(async () => {
-      try {
-        const sens = await getSensitivity(beschreibung, region, teamgroesse, projektGroesse)
-        if (!cancelled) setSensitivity(sens)
-      } catch {
-        // Sensitivität ist optional – Fehler still ignorieren
-      } finally {
-        if (!cancelled) setSensLoading(false)
       }
     })()
 
@@ -281,9 +266,6 @@ export default function Result() {
           personalkosten={displayData.personalkosten}
           kosten_expected={displayData.kosten_expected}
         />
-
-        {/* Sensitivitätsanalyse */}
-        <SensitivitySection data={sensitivity} loading={sensLoading} />
 
         {/* Disclaimer – simple text */}
         <p className="text-xs text-slate-400 mb-8 leading-relaxed">
