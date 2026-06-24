@@ -64,11 +64,12 @@ DAUER_KALIBRIERUNG: dict[str, float] = {
 }
 
 # Kalibrierungsfaktoren für spezialisierte Modelle
-# Klein: GitHub-Daten (echte Dev-Dauern), Mittel: gemischt, Gross: TED mit Vergabe-Puffer
+# Nach Integration von 2.000 synthetischen DACH-Projekten sind die Modelle
+# bereits auf realistische Dauern kalibriert – kein zusätzlicher Abzug nötig.
 KALIBRIERUNG_SPEZIALISIERT: dict[str, float] = {
-    "klein":  1.0,   # GitHub-Daten: echte Dev-Dauern, kein Abzug
-    "mittel": 0.85,  # Gemischte Daten: leichter Puffer-Abzug
-    "gross":  0.65,  # TED-Daten: Vergabe-Puffer abziehen
+    "klein":  1.0,
+    "mittel": 1.0,
+    "gross":  1.0,
 }
 
 # Bevorzugte Datenquelle für Inferenz je Grössenklasse
