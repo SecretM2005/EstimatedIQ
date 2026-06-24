@@ -3,7 +3,6 @@ import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { getEstimate } from '../api/estimate'
 import CostBar from '../components/CostBar'
 import RiskCard from '../components/RiskCard'
-import SimilarProject from '../components/SimilarProject'
 import LoadingScreen from '../components/LoadingScreen'
 
 const fmtEUR = (n) =>
@@ -259,19 +258,7 @@ export default function Result() {
           </section>
         )}
 
-        {/* Similar projects */}
-        {displayData.similar_projects?.length > 0 && (
-          <section className="mb-8">
-            <h2 className="text-[22px] font-semibold text-primary mb-3">
-              Ähnliche Referenzprojekte
-            </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {displayData.similar_projects.slice(0, 3).map((p, i) => (
-                <SimilarProject key={i} projekt={p} />
-              ))}
-            </div>
-          </section>
-        )}
+        {/* Similar projects – entfernt */}
 
         {/* Disclaimer – simple text */}
         <p className="text-xs text-slate-400 mb-8 leading-relaxed">
