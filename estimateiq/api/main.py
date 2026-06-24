@@ -85,19 +85,21 @@ class SimilarProject(BaseModel):
 
 
 class EstimateResponse(BaseModel):
-    dauer_tage:          float
-    personalkosten:      float
-    kosten_min:          float
-    kosten_expected:     float
-    kosten_max:          float
-    overhead_faktor:     float
-    confidence_score:    float
-    top_risks:           list[str]
-    similar_projects:    list[SimilarProject]
-    projekt_groesse:     str   = "mittel"
-    teamgroesse:         float = 2.0
-    teamgroesse_modell:  float = 2.0
-    team_assessment:     str | None = None
+    dauer_tage:           float
+    personalkosten:       float
+    kosten_min:           float
+    kosten_expected:      float
+    kosten_max:           float
+    overhead_faktor:      float
+    confidence_score:     float
+    top_risks:            list[str]
+    similar_projects:     list[SimilarProject]
+    projekt_groesse:      str   = "mittel"
+    groesse_konfidenz:    float = 0.0
+    groesse_auto_erkannt: bool  = False
+    teamgroesse:          float = 2.0
+    teamgroesse_modell:   float = 2.0
+    team_assessment:      str | None = None
 
 
 class HealthResponse(BaseModel):
@@ -309,19 +311,21 @@ async def estimate(req: EstimateRequest):
     konfidenz = _confidence_score(ergebnis)
 
     return EstimateResponse(
-        dauer_tage       = round(ergebnis.dauer_tage, 1),
-        personalkosten   = round(ergebnis.personalkosten, 2),
-        kosten_min       = round(ergebnis.kosten_min, 2),
-        kosten_expected  = round(ergebnis.kosten_expected, 2),
-        kosten_max       = round(ergebnis.kosten_max, 2),
-        overhead_faktor  = round(ergebnis.overhead_faktor_p50, 3),
-        confidence_score = round(konfidenz, 3),
-        top_risks        = risiken,
-        similar_projects = [SimilarProject(**p) for p in aehnliche],
-        projekt_groesse     = ergebnis.projekt_groesse,
-        teamgroesse         = round(ergebnis.teamgroesse, 1),
-        teamgroesse_modell  = round(ergebnis.teamgroesse_modell or ergebnis.teamgroesse, 1),
-        team_assessment     = ergebnis.team_assessment,
+        dauer_tage            = round(ergebnis.dauer_tage, 1),
+        personalkosten        = round(ergebnis.personalkosten, 2),
+        kosten_min            = round(ergebnis.kosten_min, 2),
+        kosten_expected       = round(ergebnis.kosten_expected, 2),
+        kosten_max            = round(ergebnis.kosten_max, 2),
+        overhead_faktor       = round(ergebnis.overhead_faktor_p50, 3),
+        confidence_score      = round(konfidenz, 3),
+        top_risks             = risiken,
+        similar_projects      = [SimilarProject(**p) for p in aehnliche],
+        projekt_groesse       = ergebnis.projekt_groesse,
+        groesse_konfidenz     = round(ergebnis.groesse_konfidenz, 3),
+        groesse_auto_erkannt  = ergebnis.groesse_auto_erkannt,
+        teamgroesse           = round(ergebnis.teamgroesse, 1),
+        teamgroesse_modell    = round(ergebnis.teamgroesse_modell or ergebnis.teamgroesse, 1),
+        team_assessment       = ergebnis.team_assessment,
     )
 
 
