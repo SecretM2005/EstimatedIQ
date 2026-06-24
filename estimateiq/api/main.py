@@ -113,6 +113,8 @@ class EstimateResponse(BaseModel):
     teamgroesse:          float = 2.0
     teamgroesse_modell:   float = 2.0
     team_assessment:      str | None = None
+    rollen:               list[dict] = []
+    komposition_typ:      str = ""
 
 
 class HealthResponse(BaseModel):
@@ -339,6 +341,8 @@ async def estimate(req: EstimateRequest):
         teamgroesse           = round(ergebnis.teamgroesse, 1),
         teamgroesse_modell    = round(ergebnis.teamgroesse_modell or ergebnis.teamgroesse, 1),
         team_assessment       = ergebnis.team_assessment,
+        rollen                = ergebnis.rollen,
+        komposition_typ       = ergebnis.komposition_typ,
     )
 
 

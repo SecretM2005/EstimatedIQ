@@ -207,6 +207,8 @@ class PipelineErgebnis:
     team_assessment:    str | None = None  # "passend" | "zu_klein" | "zu_gross"
     stundensatz_quelle: str = ""
     projekt_groesse: str = "mittel"
+    rollen: list[dict] = field(default_factory=list)   # [{"rolle": ..., "anteil": ..., "stundensatz": ...}]
+    komposition_typ: str = ""
 
     # Neu: Grössenklassifikator-Konfidenz und Auto-Erkennungs-Flag
     groesse_konfidenz:   float = 0.0   # Konfidenz des ML-Klassifikators (0.0 = manuell/Fallback)
@@ -241,6 +243,8 @@ class PipelineErgebnis:
             "projekt_groesse":       self.projekt_groesse,
             "groesse_konfidenz":     round(self.groesse_konfidenz, 3),
             "groesse_auto_erkannt":  self.groesse_auto_erkannt,
+            "rollen":                self.rollen,
+            "komposition_typ":       self.komposition_typ,
         }
 
 
@@ -472,21 +476,11 @@ def estimate(
 
     technologie = _extrahiere_technologie(beschreibung)
 
-    # Stundensatz: SO-Survey-JSON → fetch_salary_data → Fallback
-    try:
-        from estimateiq.data.fetch_stackoverflow import lookup as _so_lookup
-        salary_info   = _so_lookup(region, technologie)
-        stundensatz   = salary_info["median"]
-        salary_quelle = salary_info["quelle"]
-    except Exception:
-        try:
-            from estimateiq.data.fetch_salary_data import get_stundensatz as _get_stundensatz
-            salary_info   = _get_stundensatz(region, technologie)
-            stundensatz   = salary_info["stundensatz_median"]
-            salary_quelle = salary_info["quelle"]
-        except Exception:
-            stundensatz   = 47.5
-            salary_quelle = "hardcoded_fallback"
+    # Stundensatz: rollenbasierte Marktpreise (DACH 2024)
+    from estimateiq.data.market_rates import get_gewichteter_stundensatz
+    rate_info     = get_gewichteter_stundensatz(beschreibung, region)
+    stundensatz   = rate_info["gewichteter_satz"]
+    salary_quelle = f"market_rates:{rate_info['komposition_typ']}"
 
     overhead       = _overhead_faktor(beschreibung, projekttyp)
     personalkosten = dauer_tage * teamgroesse * stundensatz * STUNDEN_PRO_TAG
@@ -533,6 +527,8 @@ def estimate(
         team_assessment      = team_assessment,
         groesse_konfidenz    = groesse_konfidenz,
         groesse_auto_erkannt = groesse_auto_erkannt,
+        rollen               = rate_info["rollen"],
+        komposition_typ      = rate_info["komposition_typ"],
     )
 
 
