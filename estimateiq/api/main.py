@@ -84,6 +84,19 @@ class SimilarProject(BaseModel):
     dauer_tage: float | None = None
 
 
+class SensitivitaetItem(BaseModel):
+    label:          str
+    kosten_neu:     float
+    delta_eur:      float
+    delta_prozent:  float
+    richtung:       str   # "teurer" | "günstiger" | "gleich"
+
+
+class SensitivitaetResponse(BaseModel):
+    basis:            float
+    sensitivitaeten:  list[SensitivitaetItem]
+
+
 class EstimateResponse(BaseModel):
     dauer_tage:           float
     personalkosten:       float
@@ -327,6 +340,84 @@ async def estimate(req: EstimateRequest):
         teamgroesse_modell    = round(ergebnis.teamgroesse_modell or ergebnis.teamgroesse, 1),
         team_assessment       = ergebnis.team_assessment,
     )
+
+
+# ---------------------------------------------------------------------------
+# Sensitivity-Endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/api/estimate/sensitivity", response_model=SensitivitaetResponse, tags=["Schätzung"])
+async def estimate_sensitivity(req: EstimateRequest):
+    """
+    Berechnet 4 Preisvariationen für die Sensitivitätsanalyse.
+    Ruft intern estimate_pipeline mit leicht veränderten Parametern auf.
+    """
+    try:
+        from estimateiq.models.estimate_pipeline import estimate as pipeline_estimate
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Pipeline nicht verfügbar: {exc}")
+
+    land = req.region[:2].upper() if req.region else "DE"
+
+    def _call(**kwargs):
+        return pipeline_estimate(
+            beschreibung    = kwargs.get("beschreibung", req.beschreibung),
+            land            = kwargs.get("land", land),
+            region          = kwargs.get("region", req.region),
+            projekt_groesse = req.projekt_groesse,
+            teamgroesse_override = kwargs.get("teamgroesse_override", req.verfuegbare_teamgroesse),
+        )
+
+    try:
+        basis = _call()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=f"Pipeline-Modell nicht trainiert: {exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Basis-Schätzung fehlgeschlagen: {exc}")
+
+    basis_kosten = basis.kosten_expected
+    basis_team   = round(basis.teamgroesse)
+
+    def _item(label: str, kosten_neu: float) -> SensitivitaetItem:
+        delta_eur = kosten_neu - basis_kosten
+        delta_pct = round(delta_eur / max(1.0, basis_kosten) * 100)
+        richtung  = "teurer" if delta_eur > 500 else "günstiger" if delta_eur < -500 else "gleich"
+        return SensitivitaetItem(
+            label         = label,
+            kosten_neu    = round(kosten_neu),
+            delta_eur     = round(delta_eur),
+            delta_prozent = delta_pct,
+            richtung      = richtung,
+        )
+
+    variationen: list[SensitivitaetItem] = []
+
+    # Variation 1: Teamgröße +1 Person
+    try:
+        v = _call(teamgroesse_override=basis_team + 1)
+        variationen.append(_item("Teamgröße +1 Person", v.kosten_expected))
+    except Exception:
+        pass
+
+    # Variation 2: Standort Schweiz (höhere Stundensätze)
+    try:
+        v = _call(land="CH", region="CH")
+        variationen.append(_item("Standort Schweiz", v.kosten_expected))
+    except Exception:
+        pass
+
+    # Variation 3: Technologie SAP (overhead_faktor 1.8 × statt ~1.3)
+    try:
+        v = _call(beschreibung=f"SAP {req.beschreibung}")
+        variationen.append(_item("Technologie SAP", v.kosten_expected))
+    except Exception:
+        pass
+
+    # Variation 4: Projekt 2 Jahre früher (IT-Gehälter ~10 % niedriger)
+    kosten_historisch = basis_kosten * 0.90
+    variationen.append(_item("Projekt 2 Jahre früher", kosten_historisch))
+
+    return SensitivitaetResponse(basis=round(basis_kosten), sensitivitaeten=variationen)
 
 
 # ---------------------------------------------------------------------------
