@@ -108,7 +108,7 @@ def lade_rohdaten(pfad: str | Path | None = None) -> list[dict]:
                 )
 
         # Zusatzquellen: PROMISE, GitHub, COSMIC, IndieHackers (automatisch geladen wenn vorhanden)
-        for zusatz_name in ["raw_promise.jsonl", "raw_github_projects.jsonl", "raw_cosmic.jsonl", "raw_indiehackers.jsonl"]:
+        for zusatz_name in ["raw_promise.jsonl", "raw_github_projects.jsonl", "raw_cosmic.jsonl", "raw_indiehackers.jsonl", "raw_user_csv.jsonl", "raw_isbsg.jsonl"]:
             zusatz_pfad = verzeichnis / zusatz_name
             if zusatz_pfad.exists():
                 pfade.append(zusatz_pfad)
