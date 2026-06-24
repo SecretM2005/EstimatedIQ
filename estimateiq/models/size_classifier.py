@@ -30,6 +30,15 @@ KLASSEN     = ["klein", "mittel", "gross"]
 KLASSEN_IDX = {k: i for i, k in enumerate(KLASSEN)}
 N_SVD       = 30
 
+# Sample-Gewichte je Datenquelle
+GEWICHTE_QUELLE: dict[str, float] = {
+    "synthetic_estimateiq": 3.0,   # echte Labels, höchste Qualität
+    "github":               2.0,   # Laufzeit-basierte Labels, realistische Dev-Dauern
+    "manuell":              2.0,   # manuell annotiert
+    "ted":                  1.0,   # Budget-Proxy, niedrigste Qualität
+}
+GEWICHT_DEFAULT = 1.0
+
 
 # ---------------------------------------------------------------------------
 # Training
@@ -68,6 +77,17 @@ def train(df: pd.DataFrame) -> dict:
     n_per_class = {k: int((df["groesse"] == k).sum()) for k in KLASSEN}
     logger.info("[Groesse] Klassenverteilung: %s", n_per_class)
 
+    # Sample-Gewichte aus Quelle
+    if "quelle" in df.columns:
+        sample_weights = df["quelle"].apply(
+            lambda q: GEWICHTE_QUELLE.get(str(q).lower(), GEWICHT_DEFAULT)
+        ).values.astype(np.float32)
+        quelle_stats = df["quelle"].value_counts().to_dict()
+        logger.info("[Groesse] Datenquellen mit Gewichten: %s",
+                    {q: f"{n}×{GEWICHTE_QUELLE.get(q, GEWICHT_DEFAULT):.0f}" for q, n in quelle_stats.items()})
+    else:
+        sample_weights = np.ones(n_gesamt, dtype=np.float32)
+
     y = df["groesse"].map(KLASSEN_IDX).values
 
     # Stratifizierter Train/Test-Split
@@ -80,10 +100,11 @@ def train(df: pd.DataFrame) -> dict:
         # Fallback ohne Stratifizierung bei sehr kleinen Datensätzen
         idx_train, idx_test = train_test_split(idx, test_size=0.20, random_state=42)
 
-    df_train = df.iloc[idx_train].reset_index(drop=True)
-    df_test  = df.iloc[idx_test].reset_index(drop=True)
-    y_train  = y[idx_train]
-    y_test   = y[idx_test]
+    df_train  = df.iloc[idx_train].reset_index(drop=True)
+    df_test   = df.iloc[idx_test].reset_index(drop=True)
+    y_train   = y[idx_train]
+    y_test    = y[idx_test]
+    sw_train  = sample_weights[idx_train]
 
     # TF-IDF + SVD Features
     texte_train = df_train["beschreibung"].tolist()
@@ -127,6 +148,7 @@ def train(df: pd.DataFrame) -> dict:
     )
     modell.fit(
         X_train, y_train,
+        sample_weight=sw_train,
         eval_set=[(X_test, y_test)],
         verbose=False,
     )

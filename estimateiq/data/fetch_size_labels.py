@@ -27,10 +27,11 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # Pfade relativ zum Projektverzeichnis
-GITHUB_JSONL  = Path("data/raw_github_projects.jsonl")
-TED_PARQUET   = Path("data/processed/notices.parquet")
-MANUELL_JSON  = Path("data/manual_size_labels.json")
-OUTPUT_JSONL  = Path("data/size_labels.jsonl")
+GITHUB_JSONL    = Path("data/raw_github_projects.jsonl")
+TED_PARQUET     = Path("data/processed/notices.parquet")
+MANUELL_JSON    = Path("data/manual_size_labels.json")
+SYNTHETIC_CSV   = Path("data/estimateiq_trainingsdaten_2000.csv")
+OUTPUT_JSONL    = Path("data/size_labels.jsonl")
 
 # Schwellenwerte für GitHub-Labels (Tage)
 GITHUB_KLEIN_MAX  = 90
@@ -176,6 +177,59 @@ def _lade_ted_labels() -> list[dict]:
     return eintraege
 
 
+def _lade_synthetic_labels() -> list[dict]:
+    """Lädt synthetische DACH-Trainingsdaten mit echten Grössenklassen-Labels aus CSV."""
+    if not SYNTHETIC_CSV.exists():
+        logger.warning("[SizeLabels] Synthetische CSV nicht gefunden: %s – übersprungen.", SYNTHETIC_CSV)
+        return []
+
+    try:
+        df = pd.read_csv(SYNTHETIC_CSV)
+    except Exception as exc:
+        logger.warning("[SizeLabels] CSV konnte nicht gelesen werden: %s", exc)
+        return []
+
+    eintraege: list[dict] = []
+    uebersprungen = 0
+
+    for _, zeile in df.iterrows():
+        beschreibung = str(zeile.get("beschreibung") or "").strip()
+        if len(beschreibung) < MIN_BESCHREIBUNG_LAENGE:
+            uebersprungen += 1
+            continue
+
+        groesse = str(zeile.get("groesse") or "").strip().lower()
+        if groesse not in GUELTIGE_GROESSEN:
+            uebersprungen += 1
+            continue
+
+        dauer_roh = zeile.get("dauer_tage")
+        try:
+            dauer = float(dauer_roh) if pd.notna(dauer_roh) else None
+        except (ValueError, TypeError):
+            dauer = None
+
+        budget_roh = zeile.get("budget_eur")
+        try:
+            budget = float(budget_roh) if pd.notna(budget_roh) else None
+        except (ValueError, TypeError):
+            budget = None
+
+        eintraege.append({
+            "beschreibung": beschreibung,
+            "groesse":      groesse,
+            "quelle":       "synthetic_estimateiq",
+            "dauer_tage":   dauer,
+            "budget_eur":   budget,
+        })
+
+    logger.info(
+        "[SizeLabels] Synthetisch: %d Einträge geladen, %d übersprungen.",
+        len(eintraege), uebersprungen,
+    )
+    return eintraege
+
+
 def _lade_manuelle_labels() -> list[dict]:
     """Lädt manuelle Beispiele aus JSON-Datei."""
     if not MANUELL_JSON.exists():
@@ -236,11 +290,18 @@ def erstelle_labels() -> list[dict]:
     """
     Sammelt Labels aus allen Quellen, dedupliziert und gibt eine Liste zurück.
     Schreibt dabei auch nach OUTPUT_JSONL.
+
+    Priorität (Dedup bevorzugt frühere Einträge):
+      1. synthetic_estimateiq – echte Labels (höchste Qualität)
+      2. github               – Laufzeit-basierte Labels
+      3. manuell              – manuell annotiert
+      4. ted                  – Budget-Proxy (niedrigste Qualität)
     """
     alle: list[dict] = []
+    alle.extend(_lade_synthetic_labels())  # Zuerst – höchste Priorität bei Dedup
     alle.extend(_lade_github_labels())
-    alle.extend(_lade_ted_labels())
     alle.extend(_lade_manuelle_labels())
+    alle.extend(_lade_ted_labels())
 
     # Deduplizierung
     vor_dedup = len(alle)

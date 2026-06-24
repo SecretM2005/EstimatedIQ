@@ -107,8 +107,9 @@ def lade_rohdaten(pfad: str | Path | None = None) -> list[dict]:
                     "Bitte zuerst: python -m estimateiq.data.fetch_ted"
                 )
 
-        # Zusatzquellen: PROMISE, GitHub, COSMIC, IndieHackers (automatisch geladen wenn vorhanden)
-        for zusatz_name in ["raw_promise.jsonl", "raw_github_projects.jsonl", "raw_cosmic.jsonl", "raw_indiehackers.jsonl", "raw_user_csv.jsonl", "raw_isbsg.jsonl"]:
+        # Zusatzquellen: PROMISE, GitHub, COSMIC, IndieHackers, ISBSG (automatisch geladen wenn vorhanden)
+        # raw_user_csv.jsonl ist veraltet – wird durch estimateiq_trainingsdaten_2000.csv ersetzt
+        for zusatz_name in ["raw_promise.jsonl", "raw_github_projects.jsonl", "raw_cosmic.jsonl", "raw_indiehackers.jsonl", "raw_isbsg.jsonl"]:
             zusatz_pfad = verzeichnis / zusatz_name
             if zusatz_pfad.exists():
                 pfade.append(zusatz_pfad)
@@ -138,11 +139,87 @@ def lade_rohdaten(pfad: str | Path | None = None) -> list[dict]:
                                    quelldatei.name, i)
         logger.info("[Laden] %s: %d Datensätze", quelldatei.name, datei_count)
 
+    # Synthetische Trainingsdaten (CSV mit echten Grössenklassen-Labels)
+    if pfad is None or Path(str(pfad)).is_dir():
+        verz = Path(pfad) if pfad else Path("data")
+        csv_pfad = verz / "estimateiq_trainingsdaten_2000.csv"
+        if csv_pfad.exists():
+            csv_datensaetze = _lade_csv_trainingsdaten(csv_pfad)
+            datensaetze.extend(csv_datensaetze)
+            logger.info("[Laden] Synthetische CSV: %d Datensätze", len(csv_datensaetze))
+
     logger.info(
         "[Laden] Gesamt: %d Datensätze aus %d Datei(en), %d fehlerhafte Zeilen.",
         len(datensaetze), len(pfade), fehlerhafte_zeilen,
     )
     return datensaetze
+
+
+def _lade_csv_trainingsdaten(pfad: Path) -> list[dict]:
+    """
+    Lädt synthetische DACH-IT-Trainingsdaten aus CSV.
+    Erhält das Grössenklassen-Label (groesse_label) für den Grössenklassifikator.
+    """
+    try:
+        df = pd.read_csv(pfad)
+    except Exception as exc:
+        logger.warning("[Laden] CSV '%s' konnte nicht gelesen werden: %s", pfad, exc)
+        return []
+
+    gueltige_groessen = {"klein", "mittel", "gross"}
+    ergebnisse: list[dict] = []
+
+    for i, zeile in df.iterrows():
+        beschreibung = str(zeile.get("beschreibung") or "").strip()
+        if not beschreibung:
+            continue
+
+        budget_raw = zeile.get("budget_eur")
+        dauer_raw  = zeile.get("dauer_tage")
+        jahr_raw   = zeile.get("jahr")
+        land_raw   = str(zeile.get("land") or "DE").upper().strip()[:2]
+        region_raw = str(zeile.get("region") or land_raw)
+        tech_raw   = str(zeile.get("technologie") or "").strip() or None
+        team_raw   = zeile.get("teamgroesse")
+        groesse    = str(zeile.get("groesse") or "").strip().lower()
+
+        try:
+            budget = float(budget_raw) if pd.notna(budget_raw) else None
+        except (ValueError, TypeError):
+            budget = None
+        try:
+            dauer = int(float(dauer_raw)) if pd.notna(dauer_raw) else None
+        except (ValueError, TypeError):
+            dauer = None
+        try:
+            jahr = int(float(jahr_raw)) if pd.notna(jahr_raw) else None
+        except (ValueError, TypeError):
+            jahr = None
+        try:
+            team = int(float(team_raw)) if pd.notna(team_raw) else None
+        except (ValueError, TypeError):
+            team = None
+
+        ergebnisse.append({
+            "document_id":       f"synthetic_{i}",
+            "publication_date":  f"{jahr}0101" if jahr else "20230101",
+            "title":             beschreibung[:80],
+            "description":       beschreibung,
+            "cpv_code":          "72200000",
+            "estimated_value":   budget,
+            "currency":          "EUR",
+            "country":           land_raw,
+            "duration_end":      None,
+            "dauer_tage_direkt": dauer,
+            "notice_type":       "synthetic",
+            "datenquelle":       "synthetic_estimateiq",
+            "technologie":       tech_raw,
+            "teamgroesse":       team,
+            "groesse_label":     groesse if groesse in gueltige_groessen else None,
+            "raw":               {},
+        })
+
+    return ergebnisse
 
 
 # ---------------------------------------------------------------------------
@@ -286,17 +363,22 @@ def _konvertiere_zu_dataframe(datensaetze: list[dict]) -> pd.DataFrame:
         # Technologie (GitHub-Sprache, COSMIC-Typ, IH-Tags)
         technologie = (rec.get("technologie") or "").strip() or None
 
+        groesse_label = str(rec.get("groesse_label") or "").strip().lower() or None
+        if groesse_label not in (None, "klein", "mittel", "gross"):
+            groesse_label = None
+
         zeilen.append({
-            "titel":        titel,
-            "beschreibung": beschreibung,
-            "budget_eur":   _budget_zu_eur(rec.get("estimated_value"), rec.get("currency")),
-            "dauer_tage":   dauer,
-            "land":         (rec.get("country") or "").upper().strip() or None,
-            "cpv_code":     cpv_code,
-            "projekttyp":   _cpv_zu_projekttyp(cpv_code),
-            "datenquelle":  rec.get("datenquelle", "ted"),
-            "technologie":  technologie,
-            "jahr":         jahr,
+            "titel":         titel,
+            "beschreibung":  beschreibung,
+            "budget_eur":    _budget_zu_eur(rec.get("estimated_value"), rec.get("currency")),
+            "dauer_tage":    dauer,
+            "land":          (rec.get("country") or "").upper().strip() or None,
+            "cpv_code":      cpv_code,
+            "projekttyp":    _cpv_zu_projekttyp(cpv_code),
+            "datenquelle":   rec.get("datenquelle", "ted"),
+            "technologie":   technologie,
+            "jahr":          jahr,
+            "groesse_label": groesse_label,
         })
         zaehler["akzeptiert"] += 1
 
@@ -375,6 +457,8 @@ def _finalisiere_typen(df: pd.DataFrame) -> pd.DataFrame:
     df["datenquelle"] = df["datenquelle"].astype("category")
     df["technologie"] = df["technologie"].astype("string")
     df["jahr"]        = pd.to_numeric(df["jahr"], errors="coerce").astype("Int64")
+    if "groesse_label" in df.columns:
+        df["groesse_label"] = df["groesse_label"].astype("string")
     logger.info("[Typen] Datentypen finalisiert.")
     return df
 
