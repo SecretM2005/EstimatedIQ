@@ -98,6 +98,21 @@ DATASET_CONFIG: dict[str, dict[str, Any]] = {
         "name_cols": [], "type_col": None,
         "domain": "Business Software", "cpv_default": "72200000",
     },
+    # COCOMO-81: actual = Aufwand in Personenmonaten; loc = KLOC
+    "COCOMO-81.csv": {
+        "effort_col": "actual", "effort_unit": "months",
+        "duration_col": None, "duration_unit": None,
+        "name_cols": ["num"], "type_col": "dev_mode",
+        "domain": "Embedded Systems Software", "cpv_default": "72200000",
+    },
+    # UCP-Dataset: Semikolon-getrennt, Aufwand in Person-Hours
+    "UCP_Dataset.csv": {
+        "effort_col": "Real_Effort_Person_Hours", "effort_unit": "hours",
+        "duration_col": None, "duration_unit": None,
+        "name_cols": ["Project_No"], "type_col": "ApplicationType",
+        "domain": None, "cpv_default": "72200000",
+        "csv_sep": ";", "decimal": ",",
+    },
 }
 
 # Domain-Keyword → CPV-Code
@@ -152,7 +167,7 @@ def _liste_repo_csvs() -> list[str]:
         return list(DATASET_CONFIG.keys())
 
 
-def _lade_csv_von_github(dateiname: str) -> pd.DataFrame | None:
+def _lade_csv_von_github(dateiname: str, csv_sep: str = ",", decimal: str = ".") -> pd.DataFrame | None:
     url = f"{RAW_BASE_URL}/{dateiname}"
     try:
         resp = httpx.get(url, timeout=30.0, follow_redirects=True)
@@ -160,7 +175,7 @@ def _lade_csv_von_github(dateiname: str) -> pd.DataFrame | None:
             logger.debug("[PROMISE] Nicht gefunden: %s", dateiname)
             return None
         resp.raise_for_status()
-        return pd.read_csv(StringIO(resp.text))
+        return pd.read_csv(StringIO(resp.text), sep=csv_sep, decimal=decimal)
     except Exception as exc:
         logger.warning("[PROMISE] Fehler beim Laden von %s: %s", dateiname, exc)
         return None
@@ -291,7 +306,9 @@ def fetch_promise_data(output_path: Path = OUTPUT_FILE) -> int:
 
     for dateiname in sorted(csv_dateien):
         logger.info("[PROMISE] Lade %s ...", dateiname)
-        df = _lade_csv_von_github(dateiname)
+        cfg_sep     = (DATASET_CONFIG.get(dateiname) or {}).get("csv_sep", ",")
+        cfg_decimal = (DATASET_CONFIG.get(dateiname) or {}).get("decimal", ".")
+        df = _lade_csv_von_github(dateiname, csv_sep=cfg_sep, decimal=cfg_decimal)
         if df is None or df.empty:
             continue
         logger.info("[PROMISE] %s: %d Zeilen, Spalten: %s",
