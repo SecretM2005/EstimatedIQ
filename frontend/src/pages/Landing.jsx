@@ -123,9 +123,10 @@ export default function Landing() {
           </div>
           <span className="font-bold text-primary text-lg tracking-tight">EstimateIQ</span>
         </div>
-        <Link to="/upload" className="btn-secondary text-sm py-2">
-          Daten hochladen
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link to="/" className="btn-primary text-sm py-2">Angebote & Projekte</Link>
+          <Link to="/upload" className="btn-secondary text-sm py-2">Daten hochladen</Link>
+        </div>
       </header>
 
       <main className="flex-1 flex flex-col items-center justify-center px-4 py-12">

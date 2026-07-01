@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { importierePositionen } from '../api/angebot'
+import NavBar from '../components/NavBar'
 
 export default function HistorischImport() {
   const [file,     setFile]     = useState(null)
@@ -32,18 +33,7 @@ export default function HistorischImport() {
 
   return (
     <div className="min-h-screen bg-light">
-      <header className="px-6 py-4 flex items-center justify-between bg-white border-b border-slate-200">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-            <span className="text-white font-bold text-sm">IQ</span>
-          </div>
-          <span className="font-bold text-primary text-lg">EstimateIQ</span>
-        </div>
-        <nav className="flex items-center gap-2">
-          <Link to="/projekte" className="btn-secondary text-sm py-2">Projekte</Link>
-          <Link to="/"         className="btn-secondary text-sm py-2">Kostenschätzung</Link>
-        </nav>
-      </header>
+      <NavBar />
 
       <main className="max-w-2xl mx-auto px-4 py-10">
         <div className="mb-8">

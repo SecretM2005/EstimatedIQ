@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getProjekte, createProjekt, deleteProjekt } from '../api/angebot'
+import NavBar from '../components/NavBar'
 
 const STATUS = {
   entwurf:       { text: 'Entwurf',       cls: 'bg-slate-100 text-slate-600' },
@@ -39,19 +40,7 @@ export default function Projekte() {
 
   return (
     <div className="min-h-screen bg-light">
-      <header className="px-6 py-4 flex items-center justify-between bg-white border-b border-slate-200">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-            <span className="text-white font-bold text-sm">IQ</span>
-          </div>
-          <span className="font-bold text-primary text-lg">EstimateIQ</span>
-        </div>
-        <nav className="flex items-center gap-2">
-          <Link to="/"          className="btn-secondary text-sm py-2">Kostenschätzung</Link>
-          <Link to="/rollen"    className="btn-secondary text-sm py-2">Rollen</Link>
-          <Link to="/historisch" className="btn-secondary text-sm py-2">Import</Link>
-        </nav>
-      </header>
+      <NavBar />
 
       <main className="max-w-4xl mx-auto px-4 py-10">
         <div className="flex items-center justify-between mb-8">

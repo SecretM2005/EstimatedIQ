@@ -10,13 +10,18 @@ import HistorischImport from './pages/HistorischImport'
 export default function App() {
   return (
     <Routes>
-      <Route path="/"               element={<Landing />} />
-      <Route path="/result"         element={<Result />} />
-      <Route path="/upload"         element={<Upload />} />
+      {/* Neue Hauptseite */}
+      <Route path="/"               element={<Projekte />} />
       <Route path="/projekte"       element={<Projekte />} />
       <Route path="/projekte/:id"   element={<ProjektDetail />} />
       <Route path="/rollen"         element={<Rollen />} />
       <Route path="/historisch"     element={<HistorischImport />} />
+
+      {/* Alte ML-Kostenschätzung unter /schaetzung */}
+      <Route path="/schaetzung"     element={<Landing />} />
+      <Route path="/result"         element={<Result />} />
+      <Route path="/upload"         element={<Upload />} />
+
       <Route path="*"               element={<Navigate to="/" replace />} />
     </Routes>
   )

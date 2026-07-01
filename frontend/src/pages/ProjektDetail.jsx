@@ -4,6 +4,7 @@ import {
   getProjekt, getPositionen, createPosition, deletePosition,
   updateIstStunden, sucheAehnliche, createAngebot, getPdfUrl, getRollen,
 } from '../api/angebot'
+import NavBar from '../components/NavBar'
 
 const fmtEUR = n =>
   new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n)
@@ -113,18 +114,7 @@ export default function ProjektDetail() {
 
   return (
     <div className="min-h-screen bg-light">
-      <header className="px-6 py-4 flex items-center justify-between bg-white border-b border-slate-200">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-            <span className="text-white font-bold text-sm">IQ</span>
-          </div>
-          <span className="font-bold text-primary text-lg">EstimateIQ</span>
-        </div>
-        <nav className="flex items-center gap-2">
-          <Link to="/projekte" className="btn-secondary text-sm py-2">← Projekte</Link>
-          <Link to="/rollen"   className="btn-secondary text-sm py-2">Rollen</Link>
-        </nav>
-      </header>
+      <NavBar />
 
       <main className="max-w-4xl mx-auto px-4 py-10">
         {/* Projekt-Header */}
