@@ -62,7 +62,7 @@ export default function Projekte() {
                 <input
                   value={name} onChange={e => setName(e.target.value)}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                  placeholder="z.B. Web-Portal Relaunch" required
+                  required
                 />
               </div>
               <div>
@@ -70,7 +70,6 @@ export default function Projekte() {
                 <input
                   value={kunde} onChange={e => setKunde(e.target.value)}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                  placeholder="z.B. Mustermann GmbH"
                 />
               </div>
             </div>

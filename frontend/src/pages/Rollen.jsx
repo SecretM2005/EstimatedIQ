@@ -59,7 +59,7 @@ export default function Rollen() {
                 <input
                   value={name} onChange={e => setName(e.target.value)}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                  placeholder="z.B. Senior Developer" required
+                  required
                 />
               </div>
               <div>
@@ -67,7 +67,7 @@ export default function Rollen() {
                 <input
                   type="number" min="1" step="1" value={satz} onChange={e => setSatz(e.target.value)}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                  placeholder="z.B. 120" required
+                  required
                 />
               </div>
             </div>

@@ -18,8 +18,8 @@ function KonfidenzBadge({ score }) {
 }
 
 export default function ProjektDetail() {
-  const { id }      = useParams()
-  const projekt_id  = parseInt(id)
+  const { id }     = useParams()
+  const projekt_id = parseInt(id)
 
   const [projekt,    setProjekt]    = useState(null)
   const [positionen, setPositionen] = useState([])
@@ -29,6 +29,7 @@ export default function ProjektDetail() {
   const [beschreibung, setBeschreibung] = useState('')
   const [stunden,      setStunden]      = useState('')
   const [rolleId,      setRolleId]      = useState('')
+  const [satz,         setSatz]         = useState('')   // projektspezifischer Stundensatz
   const [saving,       setSaving]       = useState(false)
 
   const [suchErgebnis, setSuchErgebnis] = useState(null)
@@ -51,6 +52,16 @@ export default function ProjektDetail() {
 
   useEffect(() => { load() }, [load])
 
+  // Rollenwechsel → Stundensatz vorbelegen
+  const handleRolleChange = (e) => {
+    const rid = e.target.value
+    setRolleId(rid)
+    if (rid) {
+      const rolle = rollen.find(r => r.id === parseInt(rid))
+      if (rolle) setSatz(String(rolle.stundensatz_eur))
+    }
+  }
+
   const aktivPositionen = positionen.filter(p => !p.ist_historisch)
 
   const gesamtSoll = aktivPositionen.reduce(
@@ -66,8 +77,9 @@ export default function ProjektDetail() {
         beschreibung_text: beschreibung.trim(),
         soll_stunden:      parseFloat(stunden),
         rolle_id:          rolleId ? parseInt(rolleId) : null,
+        stundensatz_eur:   satz ? parseFloat(satz) : null,
       })
-      setBeschreibung(''); setStunden(''); setRolleId('')
+      setBeschreibung(''); setStunden(''); setRolleId(''); setSatz('')
       setSuchErgebnis(null)
       load()
     } finally { setSaving(false) }
@@ -120,24 +132,32 @@ export default function ProjektDetail() {
         {/* Projekt-Header */}
         <div className="flex items-start justify-between mb-8 gap-4">
           <div>
-            <p className="text-xs text-slate-400 uppercase tracking-wide mb-1">Projekt</p>
+            <Link to="/projekte" className="text-xs text-slate-400 hover:text-primary mb-1 inline-block">← Projekte</Link>
             <h1 className="text-3xl font-extrabold text-primary">{projekt?.name}</h1>
             <p className="text-sm text-slate-500 mt-0.5">{projekt?.kunde || '–'}</p>
           </div>
-          <div className="text-right shrink-0">
-            <p className="text-xs text-slate-400 mb-0.5">Angebotssumme (netto)</p>
-            <p className="text-3xl font-extrabold text-primary">{fmtEUR(gesamtSoll)}</p>
+          <div className="text-right shrink-0 flex flex-col gap-2">
+            <div>
+              <p className="text-xs text-slate-400 mb-0.5">Angebotssumme (netto)</p>
+              <p className="text-3xl font-extrabold text-primary">{fmtEUR(gesamtSoll)}</p>
+            </div>
             <button
               onClick={handlePdf}
               disabled={pdfLoading || aktivPositionen.length === 0}
-              className="btn-primary text-sm py-2 px-4 mt-3 w-full disabled:opacity-50"
+              className="btn-primary text-sm py-2 px-4 disabled:opacity-50"
             >
               {pdfLoading ? 'Erstelle PDF…' : 'Angebot als PDF'}
             </button>
+            <Link
+              to={`/projekte/${projekt_id}/nachkalkulation`}
+              className="btn-secondary text-sm py-2 px-4 text-center"
+            >
+              Nachkalkulation
+            </Link>
           </div>
         </div>
 
-        {/* Neue Position hinzufügen */}
+        {/* Neue Position */}
         <section className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-6">
           <h2 className="font-semibold text-ink mb-4">Position hinzufügen</h2>
           <form onSubmit={handleAddPosition} className="flex flex-col gap-4">
@@ -148,29 +168,35 @@ export default function ProjektDetail() {
                 onChange={e => { setBeschreibung(e.target.value); setSuchErgebnis(null) }}
                 rows={3}
                 className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary resize-none"
-                placeholder="z.B. Design und Implementierung eines REST-API-Endpunkts für Nutzerverwaltung inkl. Tests"
               />
             </div>
 
-            <div className="grid sm:grid-cols-3 gap-4">
+            <div className="grid sm:grid-cols-4 gap-4">
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">Soll-Stunden *</label>
                 <input
                   type="number" min="0.5" step="0.5" value={stunden}
                   onChange={e => setStunden(e.target.value)}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                  placeholder="z.B. 16"
                 />
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">Rolle</label>
                 <select
-                  value={rolleId} onChange={e => setRolleId(e.target.value)}
+                  value={rolleId} onChange={handleRolleChange}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary bg-white"
                 >
                   <option value="">– keine –</option>
                   {rollen.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
                 </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">Stundensatz €/h</label>
+                <input
+                  type="number" min="1" step="1" value={satz}
+                  onChange={e => setSatz(e.target.value)}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                />
               </div>
               <div className="flex flex-col justify-end gap-2">
                 <button
@@ -208,9 +234,8 @@ export default function ProjektDetail() {
                   {' '}({suchErgebnis.n_verglichen} verglichen)
                 </p>
               </div>
-
               {suchErgebnis.treffer.length === 0 ? (
-                <p className="text-sm text-slate-400">Keine ähnlichen Positionen gefunden — bitte erst historische Daten importieren.</p>
+                <p className="text-sm text-slate-400">Keine ähnlichen Positionen gefunden – bitte erst historische Daten importieren.</p>
               ) : (
                 <div className="flex flex-col gap-2">
                   {suchErgebnis.treffer.map((t, i) => (
@@ -239,10 +264,9 @@ export default function ProjektDetail() {
           <h2 className="text-[22px] font-semibold text-primary mb-3">
             Positionen ({aktivPositionen.length})
           </h2>
-
           {aktivPositionen.length === 0 ? (
             <div className="bg-white rounded-xl border border-slate-200 p-8 text-center text-slate-400">
-              Noch keine Positionen. Füge oben die erste Position hinzu.
+              Noch keine Positionen.
             </div>
           ) : (
             <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -256,7 +280,7 @@ export default function ProjektDetail() {
                         <p className="text-xs text-slate-400 mt-0.5">
                           {pos.rolle_name || '–'}{' · '}
                           {pos.soll_stunden} h Soll
-                          {pos.stundensatz_snapshot ? ` · ${fmtEUR(pos.stundensatz_snapshot)}/h` : ''}
+                          {pos.stundensatz_snapshot ? ` · ${pos.stundensatz_snapshot} €/h` : ''}
                           {pos.ist_stunden != null && (
                             <span className="ml-2 text-emerald-600 font-medium">{pos.ist_stunden} h Ist</span>
                           )}
@@ -271,7 +295,7 @@ export default function ProjektDetail() {
                                 type="number" value={istValue}
                                 onChange={e => setIstValue(e.target.value)}
                                 className="w-20 border border-slate-200 rounded px-2 py-1 text-xs"
-                                placeholder="h" autoFocus
+                                autoFocus
                               />
                               <button onClick={() => handleIstSave(pos.id)} className="text-xs text-emerald-600 font-medium">OK</button>
                               <button onClick={() => setEditIstId(null)} className="text-xs text-slate-400">✕</button>
@@ -294,7 +318,6 @@ export default function ProjektDetail() {
                   </div>
                 )
               })}
-
               <div className="border-t border-slate-200 px-5 py-4 bg-slate-50 flex justify-between items-center">
                 <span className="text-sm font-semibold text-slate-600">Gesamt (netto)</span>
                 <span className="text-lg font-extrabold text-primary">{fmtEUR(gesamtSoll)}</span>

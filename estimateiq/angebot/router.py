@@ -66,6 +66,7 @@ class PositionCreate(BaseModel):
     beschreibung_text: str
     soll_stunden: float
     rolle_id: int | None = None
+    stundensatz_eur: float | None = None  # überschreibt den Rollensatz
 
 class PositionIstUpdate(BaseModel):
     ist_stunden: float
@@ -214,7 +215,13 @@ def erstelle_position(projekt_id: int, body: PositionCreate, db: Session = Depen
         raise HTTPException(404, "Projekt nicht gefunden.")
 
     rolle = db.get(Rolle, body.rolle_id) if body.rolle_id else None
-    stundensatz_snapshot = rolle.stundensatz_eur if rolle else None
+    # Expliziter Satz schlägt Rollensatz
+    if body.stundensatz_eur is not None:
+        stundensatz_snapshot = body.stundensatz_eur
+    elif rolle:
+        stundensatz_snapshot = rolle.stundensatz_eur
+    else:
+        stundensatz_snapshot = None
 
     try:
         from estimateiq.angebot.embeddings import embed
