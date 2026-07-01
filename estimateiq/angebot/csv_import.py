@@ -20,6 +20,8 @@ _SOLL         = {"soll_stunden", "soll", "schätzung", "schaetzung", "geplant", 
                  "hours", "stunden", "aufwand_soll", "plan_hours", "planned"}
 _IST          = {"ist_stunden", "ist", "actual", "actual_hours", "aufwand_ist", "verbraucht",
                  "real_hours", "tatsaechlich", "tatsächlich"}
+_STUNDENSATZ  = {"stundensatz", "stundensatz_eur", "satz", "rate", "hourly_rate", "preis",
+                 "price", "tagessatz", "stundenpreis"}
 
 
 def _find_col(df: pd.DataFrame, aliases: set[str]) -> str | None:
@@ -70,6 +72,7 @@ def parse_upload(data: bytes, filename: str) -> dict:
     col_rolle        = _find_col(df, _ROLLE)
     col_soll         = _find_col(df, _SOLL)
     col_ist          = _find_col(df, _IST)
+    col_stundensatz  = _find_col(df, _STUNDENSATZ)
 
     if col_beschreibung is None or col_soll is None:
         missing = []
@@ -118,12 +121,22 @@ def parse_upload(data: bytes, filename: str) -> dict:
         if col_projekt and pd.notna(row.get(col_projekt)):
             projekt_name = str(row[col_projekt]).strip() or None
 
+        stundensatz = None
+        if col_stundensatz and pd.notna(row.get(col_stundensatz)):
+            try:
+                sz_val = float(str(row[col_stundensatz]).replace(",", "."))
+                if sz_val > 0:
+                    stundensatz = sz_val
+            except (ValueError, TypeError):
+                pass
+
         positionen_roh.append({
-            "beschreibung_text": beschreibung,
-            "soll_stunden":      soll,
-            "ist_stunden":       ist,
-            "rolle_name":        rolle_name,
-            "projekt_name":      projekt_name,
+            "beschreibung_text":  beschreibung,
+            "soll_stunden":       soll,
+            "ist_stunden":        ist,
+            "rolle_name":         rolle_name,
+            "projekt_name":       projekt_name,
+            "stundensatz_snapshot": stundensatz,
         })
 
     stats = {
@@ -136,6 +149,7 @@ def parse_upload(data: bytes, filename: str) -> dict:
             "rolle":        col_rolle,
             "soll_stunden": col_soll,
             "ist_stunden":  col_ist,
+            "stundensatz":  col_stundensatz,
         },
     }
 

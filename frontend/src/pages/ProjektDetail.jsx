@@ -41,9 +41,7 @@ export default function ProjektDetail() {
 
   const [pdfLoading, setPdfLoading] = useState(false)
 
-  const [refSucheText,    setRefSucheText]    = useState('')
-  const [refErgebnisse,   setRefErgebnisse]   = useState(null)
-  const [refLoading,      setRefLoading]      = useState(false)
+  const [refErgebnisse,    setRefErgebnisse]    = useState(null)
   const [refUebernommenId, setRefUebernommenId] = useState(null)
 
   const load = useCallback(async () => {
@@ -54,13 +52,13 @@ export default function ProjektDetail() {
     ])
     setProjekt(p); setPositionen(pos); setRollen(r)
     setLoading(false)
+    try {
+      const refs = await sucheReferenzprojekte({ beschreibung: p.name, k: 1, exclude_projekt_id: projekt_id })
+      setRefErgebnisse(refs)
+    } catch { setRefErgebnisse([]) }
   }, [projekt_id])
 
   useEffect(() => { load() }, [load])
-
-  useEffect(() => {
-    if (projekt && !refSucheText) setRefSucheText(projekt.name)
-  }, [projekt]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Rollenwechsel → Stundensatz vorbelegen
   const handleRolleChange = (e) => {
@@ -113,20 +111,6 @@ export default function ProjektDetail() {
     } finally {
       setSucheLoading(false)
     }
-  }
-
-  const handleRefSuche = async () => {
-    if (!refSucheText.trim()) return
-    setRefLoading(true)
-    try {
-      const res = await sucheReferenzprojekte({
-        beschreibung:       refSucheText.trim(),
-        k:                  3,
-        exclude_projekt_id: projekt_id,
-      })
-      setRefErgebnisse(res)
-    } catch { setRefErgebnisse([]) }
-    finally { setRefLoading(false) }
   }
 
   const handleVorlageUebernehmen = async (refId) => {
@@ -190,61 +174,39 @@ export default function ProjektDetail() {
           </div>
         </div>
 
-        {/* Referenzprojekt als Vorlage */}
-        <section className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-6">
-          <h2 className="font-semibold text-ink mb-4">Referenzprojekt als Vorlage</h2>
-          <div className="flex gap-3">
-            <input
-              value={refSucheText}
-              onChange={e => { setRefSucheText(e.target.value); setRefErgebnisse(null) }}
-              className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-            />
-            <button
-              onClick={handleRefSuche}
-              disabled={refLoading || !refSucheText.trim()}
-              className="btn-secondary text-sm py-2 px-4 shrink-0 disabled:opacity-50"
-            >
-              {refLoading ? 'Suche…' : 'Ähnliche Projekte'}
-            </button>
-          </div>
-
-          {refErgebnisse !== null && (
-            <div className="mt-4 flex flex-col gap-3">
-              {refErgebnisse.length === 0 ? (
-                <p className="text-sm text-slate-400">Keine ähnlichen Referenzprojekte gefunden – bitte erst Projekte mit Projekt-Spalte importieren.</p>
-              ) : (
-                refErgebnisse.map(ref => (
-                  <div key={ref.projekt_id} className="border border-slate-200 rounded-lg p-4 flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <p className="font-medium text-sm text-ink">{ref.projekt_name}</p>
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
-                          {Math.round(ref.aehnlichkeit * 100)}% ähnlich
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-400 mb-2">{ref.n_positionen} Positionen</p>
-                      <div className="flex flex-col gap-0.5">
-                        {ref.positionen.slice(0, 3).map((p, i) => (
-                          <p key={i} className="text-xs text-slate-500 truncate">· {p.beschreibung_text} ({p.soll_stunden} h)</p>
-                        ))}
-                        {ref.n_positionen > 3 && (
-                          <p className="text-xs text-slate-400">… und {ref.n_positionen - 3} weitere</p>
-                        )}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => handleVorlageUebernehmen(ref.projekt_id)}
-                      disabled={refUebernommenId === ref.projekt_id}
-                      className="btn-primary text-sm py-2 px-3 shrink-0 disabled:opacity-50"
-                    >
-                      {refUebernommenId === ref.projekt_id ? 'Übernehme…' : 'Als Vorlage'}
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-        </section>
+        {/* Ähnlichstes Referenzprojekt – wird beim Laden automatisch ermittelt */}
+        {refErgebnisse !== null && refErgebnisse.length > 0 && (() => {
+          const ref = refErgebnisse[0]
+          return (
+            <section className="bg-blue-50 border border-blue-200 rounded-xl p-5 mb-6 flex items-start justify-between gap-4">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <p className="text-xs font-semibold text-blue-600 uppercase tracking-wide">Empfohlene Vorlage</p>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                    {Math.round(ref.aehnlichkeit * 100)}% ähnlich
+                  </span>
+                </div>
+                <p className="font-semibold text-ink mb-1">{ref.projekt_name}</p>
+                <p className="text-xs text-slate-500 mb-2">{ref.n_positionen} Positionen</p>
+                <div className="flex flex-col gap-0.5">
+                  {ref.positionen.slice(0, 3).map((p, i) => (
+                    <p key={i} className="text-xs text-slate-500 truncate">· {p.beschreibung_text} ({p.soll_stunden} h{p.stundensatz_snapshot ? ` · ${p.stundensatz_snapshot} €/h` : ''})</p>
+                  ))}
+                  {ref.n_positionen > 3 && (
+                    <p className="text-xs text-slate-400">… und {ref.n_positionen - 3} weitere</p>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => handleVorlageUebernehmen(ref.projekt_id)}
+                disabled={refUebernommenId === ref.projekt_id}
+                className="btn-primary text-sm py-2 px-4 shrink-0 disabled:opacity-50"
+              >
+                {refUebernommenId === ref.projekt_id ? 'Übernehme…' : 'Als Vorlage übernehmen'}
+              </button>
+            </section>
+          )
+        })()}
 
         {/* Neue Position */}
         <section className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-6">

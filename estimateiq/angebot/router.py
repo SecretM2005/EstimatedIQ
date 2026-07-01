@@ -354,6 +354,7 @@ async def importiere_positionen(
                     beschreibung_text=p_data["beschreibung_text"],
                     soll_stunden=p_data["soll_stunden"],
                     ist_stunden=p_data.get("ist_stunden"),
+                    stundensatz_snapshot=p_data.get("stundensatz_snapshot"),
                     ist_historisch=False,
                 )
                 if vecs and vecs[i] is not None:
