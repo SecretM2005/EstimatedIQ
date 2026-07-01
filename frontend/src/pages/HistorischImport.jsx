@@ -53,6 +53,7 @@ export default function HistorischImport() {
           </ul>
           <p className="font-medium text-blue-800 mb-1 mt-3">Optionale Spalten</p>
           <ul className="list-disc list-inside space-y-0.5 text-blue-700">
+            <li><code className="bg-blue-100 px-1 rounded">Projekt</code> (oder: projektname, project) – gruppiert Positionen als Referenzprojekt für die Ähnlichkeitssuche</li>
             <li><code className="bg-blue-100 px-1 rounded">Rolle</code> (oder: role, funktion)</li>
             <li><code className="bg-blue-100 px-1 rounded">Ist_Stunden</code> (oder: ist, actual, actual_hours)</li>
           </ul>

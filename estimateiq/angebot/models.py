@@ -32,7 +32,17 @@ class Projekt(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     kunde: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(50), default="entwurf")
+    ist_referenz: Mapped[bool] = mapped_column(Boolean, default=False)
+    embedding_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     erstellt_am: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    def get_embedding(self) -> list[float] | None:
+        if not self.embedding_json:
+            return None
+        return json.loads(self.embedding_json)
+
+    def set_embedding(self, vec: list[float]) -> None:
+        self.embedding_json = json.dumps(vec)
 
     positionen: Mapped[list["Leistungsposition"]] = relationship(
         back_populates="projekt", cascade="all, delete-orphan"

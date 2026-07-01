@@ -1,6 +1,7 @@
 """
 CSV/Excel-Import historischer Leistungspositionen.
 Erkennt Spalten automatisch (deutsch + englisch).
+Wenn eine Projekt-Spalte vorhanden ist, werden Positionen nach Projekt gruppiert.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+_PROJEKT      = {"projekt", "projektname", "project", "project_name", "auftrag", "vorhaben"}
 _BESCHREIBUNG = {"beschreibung", "description", "titel", "title", "position", "leistung", "text", "aufgabe"}
 _ROLLE        = {"rolle", "role", "funktion", "function", "profil", "typ"}
 _SOLL         = {"soll_stunden", "soll", "schätzung", "schaetzung", "geplant", "estimated_hours",
@@ -30,7 +32,15 @@ def _find_col(df: pd.DataFrame, aliases: set[str]) -> str | None:
 def parse_upload(data: bytes, filename: str) -> dict:
     """
     Parst CSV oder Excel.
-    Gibt zurück: {"positionen": [...], "fehler": [...], "stats": {...}}
+
+    Rückgabe:
+      {
+        "projekte": [{"name": str, "positionen": [...]}],   # wenn Projekt-Spalte vorhanden
+        "einzelpositionen": [...],                           # wenn keine Projekt-Spalte
+        "fehler": [...],
+        "stats": {...},
+        "hat_projekt_spalte": bool,
+      }
     """
     suffix = Path(filename).suffix.lower()
     df = None
@@ -49,8 +59,13 @@ def parse_upload(data: bytes, filename: str) -> dict:
             if df is None:
                 df = pd.read_csv(io.BytesIO(data))
     except Exception as e:
-        return {"positionen": [], "fehler": [str(e)], "stats": {"gesamt": 0, "akzeptiert": 0, "abgelehnt": 0}}
+        return {
+            "projekte": [], "einzelpositionen": [], "fehler": [str(e)],
+            "stats": {"gesamt": 0, "akzeptiert": 0, "abgelehnt": 0},
+            "hat_projekt_spalte": False,
+        }
 
+    col_projekt      = _find_col(df, _PROJEKT)
     col_beschreibung = _find_col(df, _BESCHREIBUNG)
     col_rolle        = _find_col(df, _ROLLE)
     col_soll         = _find_col(df, _SOLL)
@@ -63,13 +78,14 @@ def parse_upload(data: bytes, filename: str) -> dict:
         if col_soll is None:
             missing.append("Soll-Stunden")
         return {
-            "positionen": [],
+            "projekte": [], "einzelpositionen": [],
             "fehler": [f"Pflicht-Spalten fehlen: {', '.join(missing)}. Erkannte Spalten: {list(df.columns)}"],
             "stats": {"gesamt": len(df), "akzeptiert": 0, "abgelehnt": len(df)},
+            "hat_projekt_spalte": col_projekt is not None,
         }
 
-    positionen = []
-    fehler     = []
+    positionen_roh = []
+    fehler         = []
 
     for i, row in df.iterrows():
         beschreibung = str(row.get(col_beschreibung, "") or "").strip()
@@ -98,25 +114,50 @@ def parse_upload(data: bytes, filename: str) -> dict:
         if col_rolle and pd.notna(row.get(col_rolle)):
             rolle_name = str(row[col_rolle]).strip() or None
 
-        positionen.append({
+        projekt_name = None
+        if col_projekt and pd.notna(row.get(col_projekt)):
+            projekt_name = str(row[col_projekt]).strip() or None
+
+        positionen_roh.append({
             "beschreibung_text": beschreibung,
             "soll_stunden":      soll,
             "ist_stunden":       ist,
             "rolle_name":        rolle_name,
+            "projekt_name":      projekt_name,
         })
 
-    return {
-        "positionen": positionen,
-        "fehler":     fehler,
-        "stats": {
-            "gesamt":     len(df),
-            "akzeptiert": len(positionen),
-            "abgelehnt":  len(df) - len(positionen),
-            "spalten": {
-                "beschreibung": col_beschreibung,
-                "rolle":        col_rolle,
-                "soll_stunden": col_soll,
-                "ist_stunden":  col_ist,
-            },
+    stats = {
+        "gesamt":     len(df),
+        "akzeptiert": len(positionen_roh),
+        "abgelehnt":  len(df) - len(positionen_roh),
+        "spalten": {
+            "projekt":      col_projekt,
+            "beschreibung": col_beschreibung,
+            "rolle":        col_rolle,
+            "soll_stunden": col_soll,
+            "ist_stunden":  col_ist,
         },
     }
+
+    if col_projekt:
+        # Nach Projekt gruppieren
+        projekte_map: dict[str, list[dict]] = {}
+        for p in positionen_roh:
+            key = p["projekt_name"] or "__unbekannt__"
+            projekte_map.setdefault(key, []).append(p)
+        projekte = [{"name": name, "positionen": pos} for name, pos in projekte_map.items()]
+        return {
+            "projekte":           projekte,
+            "einzelpositionen":   [],
+            "fehler":             fehler,
+            "stats":              {**stats, "projekte": len(projekte)},
+            "hat_projekt_spalte": True,
+        }
+    else:
+        return {
+            "projekte":           [],
+            "einzelpositionen":   positionen_roh,
+            "fehler":             fehler,
+            "stats":              stats,
+            "hat_projekt_spalte": False,
+        }

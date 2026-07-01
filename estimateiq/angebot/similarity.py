@@ -5,7 +5,7 @@ Cosine-Ähnlichkeitssuche über Leistungspositionen.
 from __future__ import annotations
 import numpy as np
 from sqlalchemy.orm import Session
-from estimateiq.angebot.models import Leistungsposition
+from estimateiq.angebot.models import Leistungsposition, Projekt
 
 
 def suche_aehnliche(
@@ -97,3 +97,62 @@ def suche_aehnliche(
         "avg_aehnlichkeit":  round(avg_sim, 4),
         "n_verglichen":      len(positionen),
     }
+
+
+def suche_aehnliche_projekte(
+    query_vec: list[float],
+    db: Session,
+    k: int = 3,
+    exclude_projekt_id: int | None = None,
+) -> list[dict]:
+    """
+    Findet die k ähnlichsten Referenzprojekte anhand ihres Projekt-Embeddings.
+    Gibt für jedes Treffer-Projekt auch seine Positionen zurück.
+    """
+    q = db.query(Projekt).filter(
+        Projekt.ist_referenz == True,  # noqa: E712
+        Projekt.embedding_json.isnot(None),
+    )
+    if exclude_projekt_id is not None:
+        q = q.filter(Projekt.id != exclude_projekt_id)
+
+    projekte = q.all()
+    if not projekte:
+        return []
+
+    query_arr = np.array(query_vec, dtype=np.float32)
+    kandidaten = []
+    for proj in projekte:
+        vec = proj.get_embedding()
+        if vec is None:
+            continue
+        arr = np.array(vec, dtype=np.float32)
+        sim = float(np.dot(query_arr, arr))
+        kandidaten.append((sim, proj))
+
+    kandidaten.sort(key=lambda x: x[0], reverse=True)
+    top = kandidaten[:k]
+
+    ergebnisse = []
+    for sim, proj in top:
+        positionen = [
+            {
+                "id":                p.id,
+                "beschreibung_text": p.beschreibung_text,
+                "soll_stunden":      p.soll_stunden,
+                "ist_stunden":       p.ist_stunden,
+                "rolle_name":        p.rolle.name if p.rolle else None,
+                "stundensatz_snapshot": p.stundensatz_snapshot,
+            }
+            for p in proj.positionen
+            if not p.ist_historisch  # Sicherheitsfilter (sollte nie zutreffen)
+        ]
+        ergebnisse.append({
+            "projekt_id":   proj.id,
+            "projekt_name": proj.name,
+            "aehnlichkeit": round(sim, 4),
+            "n_positionen": len(positionen),
+            "positionen":   positionen,
+        })
+
+    return ergebnisse

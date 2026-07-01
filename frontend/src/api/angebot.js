@@ -34,6 +34,10 @@ export const importierePositionen = (file) => {
   }).then(r => r.data)
 }
 
+// Referenzprojekte
+export const sucheReferenzprojekte = (body)            => api.post('/referenzprojekte/suche', body).then(r => r.data)
+export const vorlagUebernehmen     = (pId, referenzId) => api.post(`/projekte/${pId}/positionen/aus-referenz/${referenzId}`).then(r => r.data)
+
 // Angebote
 export const createAngebot    = (pId, b)   => api.post(`/projekte/${pId}/angebote`, b).then(r => r.data)
 export const getPdfUrl        = (id)       => `/api/v2/angebote/${id}/pdf`

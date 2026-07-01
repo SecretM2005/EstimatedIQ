@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from estimateiq.angebot.database import get_db
 from estimateiq.angebot.models import Rolle, Projekt, Leistungsposition, Angebot
-from estimateiq.angebot.similarity import suche_aehnliche
+from estimateiq.angebot.similarity import suche_aehnliche, suche_aehnliche_projekte
 from estimateiq.angebot.csv_import import parse_upload
 from estimateiq.angebot.pdf_export import erstelle_angebots_pdf
 
@@ -300,56 +300,176 @@ async def importiere_positionen(
     data   = await file.read()
     parsed = parse_upload(data, file.filename or "upload.csv")
 
-    if not parsed["positionen"]:
-        return {"importiert": 0, "fehler": parsed["fehler"], "stats": parsed["stats"]}
-
-    texte = [p["beschreibung_text"] for p in parsed["positionen"]]
     try:
-        from estimateiq.angebot.embeddings import embed_batch
-        vecs = embed_batch(texte)
+        from estimateiq.angebot.embeddings import embed, embed_batch
     except Exception as e:
-        logger.warning("Batch-Embedding fehlgeschlagen: %s", e)
-        vecs = [None] * len(texte)
+        logger.warning("Embedding-Modul nicht verfügbar: %s", e)
+        embed = embed_batch = None  # type: ignore[assignment]
 
     rollen_cache: dict[str, Rolle] = {}
-
-    HIST_NAME = "__historisch__"
-    hist_projekt = db.query(Projekt).filter(Projekt.name == HIST_NAME).first()
-    if not hist_projekt:
-        hist_projekt = Projekt(name=HIST_NAME, kunde="Import", status="abgeschlossen")
-        db.add(hist_projekt)
-        db.flush()
-
     importiert = 0
-    for i, p_data in enumerate(parsed["positionen"]):
-        rolle_id = None
-        rolle_name = p_data.get("rolle_name")
-        if rolle_name:
-            if rolle_name not in rollen_cache:
-                rolle = db.query(Rolle).filter(Rolle.name == rolle_name).first()
-                if not rolle:
-                    rolle = Rolle(name=rolle_name, stundensatz_eur=0.0)
-                    db.add(rolle)
-                    db.flush()
-                rollen_cache[rolle_name] = rolle
-            rolle_id = rollen_cache[rolle_name].id
 
-        pos = Leistungsposition(
-            projekt_id=hist_projekt.id,
-            rolle_id=rolle_id,
-            beschreibung_text=p_data["beschreibung_text"],
-            soll_stunden=p_data["soll_stunden"],
-            ist_stunden=p_data.get("ist_stunden"),
-            ist_historisch=True,
+    def _hole_oder_erstelle_rolle(name: str) -> int | None:
+        if not name:
+            return None
+        if name not in rollen_cache:
+            rolle = db.query(Rolle).filter(Rolle.name == name).first()
+            if not rolle:
+                rolle = Rolle(name=name, stundensatz_eur=0.0)
+                db.add(rolle)
+                db.flush()
+            rollen_cache[name] = rolle
+        return rollen_cache[name].id
+
+    if parsed["hat_projekt_spalte"]:
+        # ── Projektweiser Import (Referenzprojekte) ──────────────────────────
+        if not parsed["projekte"]:
+            return {"importiert": 0, "fehler": parsed["fehler"], "stats": parsed["stats"]}
+
+        for proj_data in parsed["projekte"]:
+            proj_name = proj_data["name"]
+            positionen_data = proj_data["positionen"]
+
+            # Bestehendes Referenzprojekt finden oder neu anlegen
+            ref_projekt = db.query(Projekt).filter(
+                Projekt.name == proj_name,
+                Projekt.ist_referenz == True,  # noqa: E712
+            ).first()
+            if not ref_projekt:
+                ref_projekt = Projekt(
+                    name=proj_name, kunde="Referenz",
+                    status="abgeschlossen", ist_referenz=True,
+                )
+                db.add(ref_projekt)
+                db.flush()
+
+            # Positionen + Embeddings
+            texte = [p["beschreibung_text"] for p in positionen_data]
+            vecs  = embed_batch(texte) if embed_batch else [None] * len(texte)
+
+            for i, p_data in enumerate(positionen_data):
+                pos = Leistungsposition(
+                    projekt_id=ref_projekt.id,
+                    rolle_id=_hole_oder_erstelle_rolle(p_data.get("rolle_name") or ""),
+                    beschreibung_text=p_data["beschreibung_text"],
+                    soll_stunden=p_data["soll_stunden"],
+                    ist_stunden=p_data.get("ist_stunden"),
+                    ist_historisch=False,
+                )
+                if vecs and vecs[i] is not None:
+                    pos.set_embedding(vecs[i])
+                db.add(pos)
+                importiert += 1
+
+            db.flush()
+
+            # Projekt-Embedding: Projektname + alle Positionstexte
+            if embed:
+                try:
+                    kombiniert = proj_name + ". " + " | ".join(texte[:10])
+                    ref_projekt.set_embedding(embed(kombiniert))
+                except Exception as e:
+                    logger.warning("Projekt-Embedding fehlgeschlagen (%s): %s", proj_name, e)
+
+        db.commit()
+
+    else:
+        # ── Flat-Import (ohne Projekt-Spalte, alter Modus) ───────────────────
+        einzelpositionen = parsed["einzelpositionen"]
+        if not einzelpositionen:
+            return {"importiert": 0, "fehler": parsed["fehler"], "stats": parsed["stats"]}
+
+        texte = [p["beschreibung_text"] for p in einzelpositionen]
+        vecs  = embed_batch(texte) if embed_batch else [None] * len(texte)
+
+        HIST_NAME = "__historisch__"
+        hist_projekt = db.query(Projekt).filter(Projekt.name == HIST_NAME).first()
+        if not hist_projekt:
+            hist_projekt = Projekt(name=HIST_NAME, kunde="Import", status="abgeschlossen")
+            db.add(hist_projekt)
+            db.flush()
+
+        for i, p_data in enumerate(einzelpositionen):
+            pos = Leistungsposition(
+                projekt_id=hist_projekt.id,
+                rolle_id=_hole_oder_erstelle_rolle(p_data.get("rolle_name") or ""),
+                beschreibung_text=p_data["beschreibung_text"],
+                soll_stunden=p_data["soll_stunden"],
+                ist_stunden=p_data.get("ist_stunden"),
+                ist_historisch=True,
+            )
+            if vecs and vecs[i] is not None:
+                pos.set_embedding(vecs[i])
+            db.add(pos)
+            importiert += 1
+
+        db.commit()
+
+    return {"importiert": importiert, "fehler": parsed["fehler"], "stats": parsed["stats"]}
+
+
+# ── Referenzprojekt-Suche ─────────────────────────────────────────────────────
+
+class ReferenzSucheRequest(BaseModel):
+    beschreibung: str
+    k: int = 3
+    exclude_projekt_id: int | None = None
+
+
+@router.post("/referenzprojekte/suche")
+def suche_referenzprojekte(body: ReferenzSucheRequest, db: Session = Depends(get_db)):
+    try:
+        from estimateiq.angebot.embeddings import embed
+        vec = embed(body.beschreibung)
+    except Exception as e:
+        raise HTTPException(503, f"Embedding-Modell nicht verfügbar: {e}")
+
+    return suche_aehnliche_projekte(
+        query_vec=vec,
+        db=db,
+        k=body.k,
+        exclude_projekt_id=body.exclude_projekt_id,
+    )
+
+
+# ── Vorlage übernehmen ────────────────────────────────────────────────────────
+
+@router.post("/projekte/{projekt_id}/positionen/aus-referenz/{referenz_id}", status_code=201)
+def vorlage_uebernehmen(
+    projekt_id:   int,
+    referenz_id:  int,
+    db:           Session = Depends(get_db),
+):
+    """Kopiert alle Positionen eines Referenzprojekts in das Zielprojekt."""
+    if not db.get(Projekt, projekt_id):
+        raise HTTPException(404, "Zielprojekt nicht gefunden.")
+    ref = db.get(Projekt, referenz_id)
+    if not ref or not ref.ist_referenz:
+        raise HTTPException(404, "Referenzprojekt nicht gefunden.")
+
+    quell_positionen = (
+        db.query(Leistungsposition)
+        .filter(Leistungsposition.projekt_id == referenz_id)
+        .order_by(Leistungsposition.erstellt_am)
+        .all()
+    )
+
+    kopiert = 0
+    for src in quell_positionen:
+        neu = Leistungsposition(
+            projekt_id=projekt_id,
+            rolle_id=src.rolle_id,
+            beschreibung_text=src.beschreibung_text,
+            soll_stunden=src.soll_stunden,
+            stundensatz_snapshot=src.stundensatz_snapshot,
+            embedding_json=src.embedding_json,
+            ist_historisch=False,
         )
-        if vecs[i] is not None:
-            pos.set_embedding(vecs[i])
-
-        db.add(pos)
-        importiert += 1
+        db.add(neu)
+        kopiert += 1
 
     db.commit()
-    return {"importiert": importiert, "fehler": parsed["fehler"], "stats": parsed["stats"]}
+    return {"kopiert": kopiert, "aus_projekt": ref.name}
 
 
 # ── Angebote ──────────────────────────────────────────────────────────────────
