@@ -142,6 +142,12 @@ async def lifespan(app: FastAPI):
         _lade_bau_bert()
     except Exception as exc:
         logger.warning("Bau-BERT Vorlade fehlgeschlagen: %s", exc)
+    try:
+        from estimateiq.angebot.database import init_db
+        init_db()
+        logger.info("Angebot-Datenbank initialisiert.")
+    except Exception as exc:
+        logger.warning("Angebot-DB Init fehlgeschlagen: %s", exc)
     yield
 
 
@@ -155,9 +161,12 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "POST"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from estimateiq.angebot.router import router as angebot_router  # noqa: E402
+app.include_router(angebot_router)
 
 _STATIC_DIR = Path(__file__).parent / "static"
 

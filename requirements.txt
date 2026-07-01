@@ -24,6 +24,11 @@ tokenizers==0.20.3
 
 # Datenbank
 supabase==2.10.0
+sqlalchemy==2.0.36
+
+# Angebotskalkulation MVP
+sentence-transformers==3.3.1
+reportlab==4.2.5
 
 # Utilities
 python-dotenv==1.0.1   # .env-Dateien für lokale Konfiguration

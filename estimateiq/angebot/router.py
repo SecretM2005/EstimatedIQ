@@ -1,0 +1,411 @@
+"""
+FastAPI-Router für Angebotskalkulation MVP.
+Alle Endpunkte unter /api/v2/
+"""
+
+from __future__ import annotations
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from estimateiq.angebot.database import get_db
+from estimateiq.angebot.models import Rolle, Projekt, Leistungsposition, Angebot
+from estimateiq.angebot.similarity import suche_aehnliche
+from estimateiq.angebot.csv_import import parse_upload
+from estimateiq.angebot.pdf_export import erstelle_angebots_pdf
+
+logger  = logging.getLogger(__name__)
+router  = APIRouter(prefix="/api/v2", tags=["angebotskalkulation"])
+
+PDF_DIR = Path(__file__).resolve().parents[2] / "data" / "angebote_pdf"
+PDF_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ── Pydantic Schemas ──────────────────────────────────────────────────────────
+
+class RolleCreate(BaseModel):
+    name: str
+    stundensatz_eur: float
+
+class RolleUpdate(BaseModel):
+    name: str | None = None
+    stundensatz_eur: float | None = None
+
+class RolleOut(BaseModel):
+    id: int
+    name: str
+    stundensatz_eur: float
+    gueltig_ab: datetime
+    model_config = {"from_attributes": True}
+
+
+class ProjektCreate(BaseModel):
+    name: str
+    kunde: str = ""
+
+class ProjektUpdate(BaseModel):
+    name: str | None = None
+    kunde: str | None = None
+    status: str | None = None
+
+class ProjektOut(BaseModel):
+    id: int
+    name: str
+    kunde: str
+    status: str
+    erstellt_am: datetime
+    model_config = {"from_attributes": True}
+
+
+class PositionCreate(BaseModel):
+    beschreibung_text: str
+    soll_stunden: float
+    rolle_id: int | None = None
+
+class PositionIstUpdate(BaseModel):
+    ist_stunden: float
+
+class PositionOut(BaseModel):
+    id: int
+    projekt_id: int
+    beschreibung_text: str
+    soll_stunden: float
+    ist_stunden: float | None
+    stundensatz_snapshot: float | None
+    rolle_id: int | None
+    rolle_name: str | None = None
+    ist_historisch: bool
+    erstellt_am: datetime
+    model_config = {"from_attributes": True}
+
+
+class SucheRequest(BaseModel):
+    beschreibung_text: str
+    k: int = 5
+    nur_historisch: bool = False
+    exclude_projekt_id: int | None = None
+
+
+class AngebotCreate(BaseModel):
+    titel: str = ""
+
+class AngebotOut(BaseModel):
+    id: int
+    projekt_id: int
+    titel: str
+    status: str
+    pdf_pfad: str | None
+    erstellt_am: datetime
+    model_config = {"from_attributes": True}
+
+
+# ── Rollen ────────────────────────────────────────────────────────────────────
+
+@router.get("/rollen", response_model=list[RolleOut])
+def liste_rollen(db: Session = Depends(get_db)):
+    return db.query(Rolle).order_by(Rolle.name).all()
+
+
+@router.post("/rollen", response_model=RolleOut, status_code=201)
+def erstelle_rolle(body: RolleCreate, db: Session = Depends(get_db)):
+    if db.query(Rolle).filter(Rolle.name == body.name).first():
+        raise HTTPException(409, f"Rolle '{body.name}' existiert bereits.")
+    rolle = Rolle(name=body.name, stundensatz_eur=body.stundensatz_eur)
+    db.add(rolle)
+    db.commit()
+    db.refresh(rolle)
+    return rolle
+
+
+@router.put("/rollen/{rolle_id}", response_model=RolleOut)
+def aktualisiere_rolle(rolle_id: int, body: RolleUpdate, db: Session = Depends(get_db)):
+    rolle = db.get(Rolle, rolle_id)
+    if not rolle:
+        raise HTTPException(404, "Rolle nicht gefunden.")
+    if body.name is not None:
+        rolle.name = body.name
+    if body.stundensatz_eur is not None:
+        rolle.stundensatz_eur = body.stundensatz_eur
+    db.commit()
+    db.refresh(rolle)
+    return rolle
+
+
+@router.delete("/rollen/{rolle_id}", status_code=204)
+def loesche_rolle(rolle_id: int, db: Session = Depends(get_db)):
+    rolle = db.get(Rolle, rolle_id)
+    if not rolle:
+        raise HTTPException(404, "Rolle nicht gefunden.")
+    db.delete(rolle)
+    db.commit()
+
+
+# ── Projekte ──────────────────────────────────────────────────────────────────
+
+@router.get("/projekte", response_model=list[ProjektOut])
+def liste_projekte(db: Session = Depends(get_db)):
+    return db.query(Projekt).order_by(Projekt.erstellt_am.desc()).all()
+
+
+@router.post("/projekte", response_model=ProjektOut, status_code=201)
+def erstelle_projekt(body: ProjektCreate, db: Session = Depends(get_db)):
+    projekt = Projekt(name=body.name, kunde=body.kunde)
+    db.add(projekt)
+    db.commit()
+    db.refresh(projekt)
+    return projekt
+
+
+@router.get("/projekte/{projekt_id}", response_model=ProjektOut)
+def hole_projekt(projekt_id: int, db: Session = Depends(get_db)):
+    projekt = db.get(Projekt, projekt_id)
+    if not projekt:
+        raise HTTPException(404, "Projekt nicht gefunden.")
+    return projekt
+
+
+@router.patch("/projekte/{projekt_id}", response_model=ProjektOut)
+def aktualisiere_projekt(projekt_id: int, body: ProjektUpdate, db: Session = Depends(get_db)):
+    projekt = db.get(Projekt, projekt_id)
+    if not projekt:
+        raise HTTPException(404, "Projekt nicht gefunden.")
+    for field, val in body.model_dump(exclude_unset=True).items():
+        setattr(projekt, field, val)
+    db.commit()
+    db.refresh(projekt)
+    return projekt
+
+
+@router.delete("/projekte/{projekt_id}", status_code=204)
+def loesche_projekt(projekt_id: int, db: Session = Depends(get_db)):
+    projekt = db.get(Projekt, projekt_id)
+    if not projekt:
+        raise HTTPException(404, "Projekt nicht gefunden.")
+    db.delete(projekt)
+    db.commit()
+
+
+# ── Leistungspositionen ───────────────────────────────────────────────────────
+
+@router.get("/projekte/{projekt_id}/positionen", response_model=list[PositionOut])
+def liste_positionen(projekt_id: int, db: Session = Depends(get_db)):
+    positionen = (
+        db.query(Leistungsposition)
+        .filter(Leistungsposition.projekt_id == projekt_id)
+        .order_by(Leistungsposition.erstellt_am)
+        .all()
+    )
+    result = []
+    for p in positionen:
+        out = PositionOut.model_validate(p)
+        out.rolle_name = p.rolle.name if p.rolle else None
+        result.append(out)
+    return result
+
+
+@router.post("/projekte/{projekt_id}/positionen", response_model=PositionOut, status_code=201)
+def erstelle_position(projekt_id: int, body: PositionCreate, db: Session = Depends(get_db)):
+    if not db.get(Projekt, projekt_id):
+        raise HTTPException(404, "Projekt nicht gefunden.")
+
+    rolle = db.get(Rolle, body.rolle_id) if body.rolle_id else None
+    stundensatz_snapshot = rolle.stundensatz_eur if rolle else None
+
+    try:
+        from estimateiq.angebot.embeddings import embed
+        vec = embed(body.beschreibung_text)
+    except Exception as e:
+        logger.warning("Embedding fehlgeschlagen: %s", e)
+        vec = None
+
+    pos = Leistungsposition(
+        projekt_id=projekt_id,
+        rolle_id=body.rolle_id,
+        beschreibung_text=body.beschreibung_text,
+        soll_stunden=body.soll_stunden,
+        stundensatz_snapshot=stundensatz_snapshot,
+    )
+    if vec:
+        pos.set_embedding(vec)
+
+    db.add(pos)
+    db.commit()
+    db.refresh(pos)
+
+    out = PositionOut.model_validate(pos)
+    out.rolle_name = rolle.name if rolle else None
+    return out
+
+
+@router.patch("/positionen/{position_id}/ist-stunden", response_model=PositionOut)
+def trage_ist_stunden_nach(position_id: int, body: PositionIstUpdate, db: Session = Depends(get_db)):
+    pos = db.get(Leistungsposition, position_id)
+    if not pos:
+        raise HTTPException(404, "Position nicht gefunden.")
+    pos.ist_stunden = body.ist_stunden
+    db.commit()
+    db.refresh(pos)
+    out = PositionOut.model_validate(pos)
+    out.rolle_name = pos.rolle.name if pos.rolle else None
+    return out
+
+
+@router.delete("/positionen/{position_id}", status_code=204)
+def loesche_position(position_id: int, db: Session = Depends(get_db)):
+    pos = db.get(Leistungsposition, position_id)
+    if not pos:
+        raise HTTPException(404, "Position nicht gefunden.")
+    db.delete(pos)
+    db.commit()
+
+
+# ── Ähnlichkeitssuche ─────────────────────────────────────────────────────────
+
+@router.post("/positionen/suche")
+def suche_positionen(body: SucheRequest, db: Session = Depends(get_db)):
+    try:
+        from estimateiq.angebot.embeddings import embed
+        vec = embed(body.beschreibung_text)
+    except Exception as e:
+        raise HTTPException(503, f"Embedding-Modell nicht verfügbar: {e}")
+
+    return suche_aehnliche(
+        query_vec=vec,
+        db=db,
+        k=body.k,
+        nur_historisch=body.nur_historisch,
+        exclude_projekt_id=body.exclude_projekt_id,
+    )
+
+
+# ── CSV/Excel-Import ──────────────────────────────────────────────────────────
+
+@router.post("/import/positionen")
+async def importiere_positionen(
+    file: UploadFile = File(...),
+    db:   Session    = Depends(get_db),
+):
+    data   = await file.read()
+    parsed = parse_upload(data, file.filename or "upload.csv")
+
+    if not parsed["positionen"]:
+        return {"importiert": 0, "fehler": parsed["fehler"], "stats": parsed["stats"]}
+
+    texte = [p["beschreibung_text"] for p in parsed["positionen"]]
+    try:
+        from estimateiq.angebot.embeddings import embed_batch
+        vecs = embed_batch(texte)
+    except Exception as e:
+        logger.warning("Batch-Embedding fehlgeschlagen: %s", e)
+        vecs = [None] * len(texte)
+
+    rollen_cache: dict[str, Rolle] = {}
+
+    HIST_NAME = "__historisch__"
+    hist_projekt = db.query(Projekt).filter(Projekt.name == HIST_NAME).first()
+    if not hist_projekt:
+        hist_projekt = Projekt(name=HIST_NAME, kunde="Import", status="abgeschlossen")
+        db.add(hist_projekt)
+        db.flush()
+
+    importiert = 0
+    for i, p_data in enumerate(parsed["positionen"]):
+        rolle_id = None
+        rolle_name = p_data.get("rolle_name")
+        if rolle_name:
+            if rolle_name not in rollen_cache:
+                rolle = db.query(Rolle).filter(Rolle.name == rolle_name).first()
+                if not rolle:
+                    rolle = Rolle(name=rolle_name, stundensatz_eur=0.0)
+                    db.add(rolle)
+                    db.flush()
+                rollen_cache[rolle_name] = rolle
+            rolle_id = rollen_cache[rolle_name].id
+
+        pos = Leistungsposition(
+            projekt_id=hist_projekt.id,
+            rolle_id=rolle_id,
+            beschreibung_text=p_data["beschreibung_text"],
+            soll_stunden=p_data["soll_stunden"],
+            ist_stunden=p_data.get("ist_stunden"),
+            ist_historisch=True,
+        )
+        if vecs[i] is not None:
+            pos.set_embedding(vecs[i])
+
+        db.add(pos)
+        importiert += 1
+
+    db.commit()
+    return {"importiert": importiert, "fehler": parsed["fehler"], "stats": parsed["stats"]}
+
+
+# ── Angebote ──────────────────────────────────────────────────────────────────
+
+@router.post("/projekte/{projekt_id}/angebote", response_model=AngebotOut, status_code=201)
+def erstelle_angebot(projekt_id: int, body: AngebotCreate, db: Session = Depends(get_db)):
+    projekt = db.get(Projekt, projekt_id)
+    if not projekt:
+        raise HTTPException(404, "Projekt nicht gefunden.")
+    angebot = Angebot(
+        projekt_id=projekt_id,
+        titel=body.titel or f"Angebot {projekt.name}",
+    )
+    db.add(angebot)
+    db.commit()
+    db.refresh(angebot)
+    return angebot
+
+
+@router.get("/angebote/{angebot_id}/pdf")
+def exportiere_pdf(angebot_id: int, db: Session = Depends(get_db)):
+    angebot = db.get(Angebot, angebot_id)
+    if not angebot:
+        raise HTTPException(404, "Angebot nicht gefunden.")
+
+    projekt = angebot.projekt
+    positionen_db = (
+        db.query(Leistungsposition)
+        .filter(
+            Leistungsposition.projekt_id == angebot.projekt_id,
+            Leistungsposition.ist_historisch == False,  # noqa: E712
+        )
+        .order_by(Leistungsposition.erstellt_am)
+        .all()
+    )
+
+    positionen_pdf = []
+    for i, pos in enumerate(positionen_db, 1):
+        satz = pos.stundensatz_snapshot or 0.0
+        positionen_pdf.append({
+            "nr":          i,
+            "beschreibung": pos.beschreibung_text,
+            "rolle":        pos.rolle.name if pos.rolle else "–",
+            "stunden":      pos.soll_stunden,
+            "stundensatz":  satz,
+            "summe":        pos.soll_stunden * satz,
+        })
+
+    pdf_bytes = erstelle_angebots_pdf(
+        angebot_nr=f"A-{angebot.id:04d}",
+        kunde=projekt.kunde or "–",
+        projekt_name=projekt.name,
+        positionen=positionen_pdf,
+        erstellt_am=angebot.erstellt_am,
+    )
+
+    pfad = PDF_DIR / f"angebot_{angebot.id}.pdf"
+    pfad.write_bytes(pdf_bytes)
+    angebot.pdf_pfad = str(pfad)
+    db.commit()
+
+    return FileResponse(
+        path=str(pfad),
+        media_type="application/pdf",
+        filename=f"Angebot-{angebot.id:04d}.pdf",
+    )
