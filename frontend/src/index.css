@@ -35,7 +35,7 @@
   }
 
   .btn-secondary {
-    @apply bg-white hover:bg-slate-50 text-primary border border-slate-200 font-medium px-6 py-3 rounded-lg transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 inline-flex items-center gap-2 justify-center;
+    @apply bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-medium px-6 py-3 rounded-lg transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 inline-flex items-center gap-2 justify-center;
   }
 
   .card {

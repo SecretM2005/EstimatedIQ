@@ -8,6 +8,7 @@ export default {
         'accent-hover': '#4f46e5',
         'accent-active':'#4338ca',
         ink:            '#0f172a',
+        primary:        '#0f172a',
         light:          '#fafafa',
         'indigo-50':    '#eef2ff',
         'indigo-100':   '#e0e7ff',
