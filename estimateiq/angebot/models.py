@@ -30,6 +30,7 @@ class Projekt(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    beschreibung: Mapped[str] = mapped_column(Text, nullable=False, default="")
     kunde: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(50), default="entwurf")
     ist_referenz: Mapped[bool] = mapped_column(Boolean, default=False)

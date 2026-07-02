@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom'
 import {
   getProjekt, getPositionen, createPosition, deletePosition,
   updateIstStunden, sucheAehnliche, createAngebot, getPdfUrl, getRollen,
-  sucheReferenzprojekte, vorlagUebernehmen,
+  sucheReferenzprojekte, vorlagUebernehmen, updateProjekt,
 } from '../api/angebot'
 import NavBar from '../components/NavBar'
 
@@ -44,6 +44,10 @@ export default function ProjektDetail() {
   const [refErgebnisse,    setRefErgebnisse]    = useState(null)
   const [refUebernommenId, setRefUebernommenId] = useState(null)
 
+  const [editBeschreibung, setEditBeschreibung] = useState(false)
+  const [beschreibungText, setBeschreibungText] = useState('')
+  const [savingBeschreibung, setSavingBeschreibung] = useState(false)
+
   const load = useCallback(async () => {
     const [p, pos, r] = await Promise.all([
       getProjekt(projekt_id),
@@ -51,9 +55,17 @@ export default function ProjektDetail() {
       getRollen(),
     ])
     setProjekt(p); setPositionen(pos); setRollen(r)
+    setBeschreibungText(p.beschreibung || '')
     setLoading(false)
+    // Suche mit Beschreibung als primärem Text, Name als Ergänzung
+    const suchbeschreibung = p.beschreibung?.trim() || p.name
     try {
-      const refs = await sucheReferenzprojekte({ beschreibung: p.name, k: 1, exclude_projekt_id: projekt_id })
+      const refs = await sucheReferenzprojekte({
+        beschreibung:       suchbeschreibung,
+        name:               p.name,
+        k:                  1,
+        exclude_projekt_id: projekt_id,
+      })
       setRefErgebnisse(refs)
     } catch { setRefErgebnisse([]) }
   }, [projekt_id])
@@ -113,6 +125,15 @@ export default function ProjektDetail() {
     }
   }
 
+  const handleBeschreibungSave = async () => {
+    setSavingBeschreibung(true)
+    try {
+      await updateProjekt(projekt_id, { beschreibung: beschreibungText.trim() })
+      setEditBeschreibung(false)
+      load()
+    } finally { setSavingBeschreibung(false) }
+  }
+
   const handleVorlageUebernehmen = async (refId) => {
     setRefUebernommenId(refId)
     try {
@@ -148,10 +169,56 @@ export default function ProjektDetail() {
       <main className="max-w-4xl mx-auto px-4 py-10">
         {/* Projekt-Header */}
         <div className="flex items-start justify-between mb-8 gap-4">
-          <div>
+          <div className="flex-1 min-w-0">
             <Link to="/projekte" className="text-xs text-slate-400 hover:text-primary mb-1 inline-block">← Projekte</Link>
             <h1 className="text-3xl font-extrabold text-primary">{projekt?.name}</h1>
             <p className="text-sm text-slate-500 mt-0.5">{projekt?.kunde || '–'}</p>
+
+            {/* Projektbeschreibung */}
+            <div className="mt-3">
+              {editBeschreibung ? (
+                <div className="flex flex-col gap-2">
+                  <textarea
+                    value={beschreibungText}
+                    onChange={e => setBeschreibungText(e.target.value)}
+                    rows={3}
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+                    autoFocus
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleBeschreibungSave}
+                      disabled={savingBeschreibung}
+                      className="btn-primary text-xs py-1.5 px-3 disabled:opacity-50"
+                    >
+                      {savingBeschreibung ? 'Speichern…' : 'Speichern'}
+                    </button>
+                    <button
+                      onClick={() => { setEditBeschreibung(false); setBeschreibungText(projekt?.beschreibung || '') }}
+                      className="btn-secondary text-xs py-1.5 px-3"
+                    >
+                      Abbrechen
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  onClick={() => setEditBeschreibung(true)}
+                  className="group cursor-pointer"
+                >
+                  {projekt?.beschreibung ? (
+                    <p className="text-sm text-slate-600 leading-relaxed group-hover:text-ink transition-colors">
+                      {projekt.beschreibung}
+                      <span className="ml-2 text-xs text-slate-300 group-hover:text-primary transition-colors">✎</span>
+                    </p>
+                  ) : (
+                    <p className="text-sm text-slate-300 italic group-hover:text-slate-400 transition-colors">
+                      Projektbeschreibung hinzufügen… <span className="not-italic">✎</span>
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
           <div className="text-right shrink-0 flex flex-col gap-2">
             <div>

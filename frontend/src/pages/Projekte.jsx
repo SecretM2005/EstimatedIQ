@@ -13,10 +13,11 @@ const STATUS = {
 export default function Projekte() {
   const [projekte,  setProjekte]  = useState([])
   const [loading,   setLoading]   = useState(true)
-  const [showForm,  setShowForm]  = useState(false)
-  const [name,      setName]      = useState('')
-  const [kunde,     setKunde]     = useState('')
-  const [saving,    setSaving]    = useState(false)
+  const [showForm,      setShowForm]      = useState(false)
+  const [name,          setName]          = useState('')
+  const [beschreibung,  setBeschreibung]  = useState('')
+  const [kunde,         setKunde]         = useState('')
+  const [saving,        setSaving]        = useState(false)
 
   const load = () => getProjekte().then(setProjekte).finally(() => setLoading(false))
   useEffect(() => { load() }, [])
@@ -26,8 +27,8 @@ export default function Projekte() {
     if (!name.trim()) return
     setSaving(true)
     try {
-      await createProjekt({ name: name.trim(), kunde: kunde.trim() })
-      setName(''); setKunde(''); setShowForm(false)
+      await createProjekt({ name: name.trim(), beschreibung: beschreibung.trim(), kunde: kunde.trim() })
+      setName(''); setBeschreibung(''); setKunde(''); setShowForm(false)
       load()
     } finally { setSaving(false) }
   }
@@ -73,6 +74,15 @@ export default function Projekte() {
                 />
               </div>
             </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Projektbeschreibung</label>
+              <textarea
+                value={beschreibung} onChange={e => setBeschreibung(e.target.value)}
+                rows={3}
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+              />
+              <p className="text-xs text-slate-400 mt-0.5">Wird für die Ähnlichkeitssuche nach passenden Referenzprojekten genutzt.</p>
+            </div>
             <div className="flex gap-2 justify-end">
               <button type="button" onClick={() => setShowForm(false)} className="btn-secondary text-sm py-2">Abbrechen</button>
               <button type="submit" disabled={saving} className="btn-primary text-sm py-2">{saving ? 'Speichern…' : 'Anlegen'}</button>
@@ -101,6 +111,9 @@ export default function Projekte() {
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge.cls}`}>{badge.text}</span>
                     </div>
                     <p className="text-xs text-slate-400">{p.kunde || '–'} · {new Date(p.erstellt_am).toLocaleDateString('de-DE')}</p>
+                    {p.beschreibung && (
+                      <p className="text-xs text-slate-400 mt-0.5 line-clamp-1">{p.beschreibung}</p>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <Link to={`/projekte/${p.id}`} className="btn-secondary text-xs py-1.5 px-3">Öffnen</Link>

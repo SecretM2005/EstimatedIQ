@@ -46,16 +46,19 @@ class RolleOut(BaseModel):
 
 class ProjektCreate(BaseModel):
     name: str
+    beschreibung: str = ""
     kunde: str = ""
 
 class ProjektUpdate(BaseModel):
     name: str | None = None
+    beschreibung: str | None = None
     kunde: str | None = None
     status: str | None = None
 
 class ProjektOut(BaseModel):
     id: int
     name: str
+    beschreibung: str
     kunde: str
     status: str
     erstellt_am: datetime
@@ -155,7 +158,7 @@ def liste_projekte(db: Session = Depends(get_db)):
 
 @router.post("/projekte", response_model=ProjektOut, status_code=201)
 def erstelle_projekt(body: ProjektCreate, db: Session = Depends(get_db)):
-    projekt = Projekt(name=body.name, kunde=body.kunde)
+    projekt = Projekt(name=body.name, beschreibung=body.beschreibung, kunde=body.kunde)
     db.add(projekt)
     db.commit()
     db.refresh(projekt)
@@ -412,16 +415,22 @@ async def importiere_positionen(
 # ── Referenzprojekt-Suche ─────────────────────────────────────────────────────
 
 class ReferenzSucheRequest(BaseModel):
-    beschreibung: str
+    beschreibung: str        # Projektbeschreibung (primär)
+    name: str = ""           # Projektname (wird angehängt)
     k: int = 3
     exclude_projekt_id: int | None = None
 
 
 @router.post("/referenzprojekte/suche")
 def suche_referenzprojekte(body: ReferenzSucheRequest, db: Session = Depends(get_db)):
+    # Beschreibung ist primär; Name wird nachgestellt für zusätzlichen Kontext
+    suchtext = body.beschreibung.strip()
+    if body.name.strip() and body.name.strip() not in suchtext:
+        suchtext = suchtext + ". " + body.name.strip() if suchtext else body.name.strip()
+
     try:
         from estimateiq.angebot.embeddings import embed
-        vec = embed(body.beschreibung)
+        vec = embed(suchtext)
     except Exception as e:
         raise HTTPException(503, f"Embedding-Modell nicht verfügbar: {e}")
 
