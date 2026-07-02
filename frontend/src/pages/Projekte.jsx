@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { getProjekte, createProjekt, deleteProjekt } from '../api/angebot'
 import NavBar from '../components/NavBar'
 
@@ -19,6 +19,7 @@ export default function Projekte() {
   const [kunde,         setKunde]         = useState('')
   const [saving,        setSaving]        = useState(false)
 
+  const navigate = useNavigate()
   const load = () => getProjekte().then(setProjekte).finally(() => setLoading(false))
   useEffect(() => { load() }, [])
 
@@ -27,9 +28,8 @@ export default function Projekte() {
     if (!name.trim()) return
     setSaving(true)
     try {
-      await createProjekt({ name: name.trim(), beschreibung: beschreibung.trim(), kunde: kunde.trim() })
-      setName(''); setBeschreibung(''); setKunde(''); setShowForm(false)
-      load()
+      const neu = await createProjekt({ name: name.trim(), beschreibung: beschreibung.trim(), kunde: kunde.trim() })
+      navigate(`/projekte/${neu.id}`)
     } finally { setSaving(false) }
   }
 
