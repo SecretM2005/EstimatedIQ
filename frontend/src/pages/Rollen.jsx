@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import NavBar from '../components/NavBar'
 import { getRollen, createRolle, updateRolle, deleteRolle } from '../api/angebot'
 
 const fmtEUR = n =>
@@ -38,70 +37,103 @@ export default function Rollen() {
   }
 
   return (
-    <div className="min-h-screen bg-light">
-      <NavBar />
-
-      <main className="max-w-2xl mx-auto px-4 py-10">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-3xl font-extrabold text-primary">Rollen & Stundensätze</h1>
-            <p className="text-sm text-slate-500 mt-1">Verwalte Rollen und ihre Stundensätze für Angebotspositionen.</p>
-          </div>
-          <button onClick={openCreate} className="btn-primary text-sm py-2 px-4">+ Neue Rolle</button>
+    <div className="p-8 pb-16 max-w-[900px]">
+      {/* Page header */}
+      <div className="flex items-end justify-between gap-4 mb-6">
+        <div>
+          <h1 className="text-[24px] font-bold tracking-tight text-slate-900 m-0">Rollen & Stundensätze</h1>
+          <p className="mt-1.5 text-[13.5px] text-slate-500">
+            {rollen.length} Rolle{rollen.length !== 1 ? 'n' : ''} · Stundensätze für Angebotspositionen
+          </p>
         </div>
+        <button
+          onClick={openCreate}
+          className="h-10 inline-flex items-center gap-2 px-4 bg-accent hover:bg-accent-hover text-white text-[13.5px] font-semibold rounded-lg transition-colors shadow-accent"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg>
+          Neue Rolle
+        </button>
+      </div>
 
-        {showForm && (
-          <form onSubmit={handleSave} className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm mb-6 flex flex-col gap-4">
-            <h2 className="font-semibold text-ink">{editId ? 'Rolle bearbeiten' : 'Neue Rolle'}</h2>
-            <div className="grid sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">Rollenname *</label>
-                <input
-                  value={name} onChange={e => setName(e.target.value)}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">Stundensatz (€/h) *</label>
-                <input
-                  type="number" min="1" step="1" value={satz} onChange={e => setSatz(e.target.value)}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                  required
-                />
-              </div>
+      {/* Form */}
+      {showForm && (
+        <form onSubmit={handleSave} className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs mb-5 flex flex-col gap-4">
+          <h2 className="text-[14px] font-semibold text-slate-900">{editId ? 'Rolle bearbeiten' : 'Neue Rolle anlegen'}</h2>
+          <div className="grid sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5">Rollenname *</label>
+              <input
+                value={name} onChange={e => setName(e.target.value)} required
+                placeholder="z. B. Senior Developer"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent"
+              />
             </div>
-            <div className="flex gap-2 justify-end">
-              <button type="button" onClick={cancel} className="btn-secondary text-sm py-2">Abbrechen</button>
-              <button type="submit" disabled={saving} className="btn-primary text-sm py-2">{saving ? 'Speichern…' : 'Speichern'}</button>
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5">Stundensatz (€/h) *</label>
+              <input
+                type="number" min="1" step="1" value={satz} onChange={e => setSatz(e.target.value)} required
+                placeholder="z. B. 120"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent"
+              />
             </div>
-          </form>
-        )}
-
-        {loading ? (
-          <div className="text-slate-400 text-center py-20">Lade…</div>
-        ) : rollen.length === 0 ? (
-          <div className="text-center py-20 text-slate-400">
-            <p className="font-medium">Noch keine Rollen</p>
-            <p className="text-sm mt-1">Lege Rollen wie "Senior Developer" oder "Projektleiter" an.</p>
           </div>
-        ) : (
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-            {rollen.map((r, i) => (
-              <div key={r.id} className={`flex items-center justify-between px-5 py-4 ${i > 0 ? 'border-t border-slate-100' : ''}`}>
-                <div>
-                  <p className="font-medium text-ink">{r.name}</p>
-                  <p className="text-xs text-slate-400">{fmtEUR(r.stundensatz_eur)} / Stunde</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => openEdit(r)} className="text-xs text-primary hover:underline px-2 py-1">Bearbeiten</button>
-                  <button onClick={() => handleDelete(r.id)} className="text-xs text-red-500 hover:text-red-700 px-2 py-1">Löschen</button>
-                </div>
-              </div>
+          <div className="flex gap-2 justify-end">
+            <button type="button" onClick={cancel} className="h-9 px-4 bg-white border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">Abbrechen</button>
+            <button type="submit" disabled={saving} className="h-9 px-4 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50">
+              {saving ? 'Speichern…' : 'Speichern'}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* Table */}
+      {loading ? (
+        <div className="text-slate-400 text-center py-20 text-sm">Lade…</div>
+      ) : rollen.length === 0 ? (
+        <div className="bg-white border border-slate-200 rounded-xl p-16 text-center shadow-xs">
+          <p className="text-[15px] font-semibold text-slate-900 mb-1">Noch keine Rollen</p>
+          <p className="text-sm text-slate-500">Lege Rollen wie "Senior Developer" oder "Projektleiter" an.</p>
+        </div>
+      ) : (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
+          {/* Head */}
+          <div className="grid items-center px-5 py-2.5 bg-slate-50 border-b border-slate-200"
+            style={{ gridTemplateColumns: '1fr 160px 120px' }}>
+            {['Rolle', 'Stundensatz', ''].map(h => (
+              <span key={h} className="text-[10.5px] font-semibold uppercase tracking-[0.04em] text-slate-400">{h}</span>
             ))}
           </div>
-        )}
-      </main>
+
+          {rollen.map((r, i) => (
+            <div
+              key={r.id}
+              className="grid items-center px-5 py-3.5 border-t border-slate-100 group"
+              style={{ gridTemplateColumns: '1fr 160px 120px' }}
+            >
+              <div className="min-w-0 pr-4">
+                <div className="text-[13px] font-semibold text-slate-900">{r.name}</div>
+              </div>
+              <div className="text-[13px] font-semibold text-slate-900 tabular-nums">
+                {fmtEUR(r.stundensatz_eur)}<span className="text-slate-400 font-normal text-[12px]"> / h</span>
+              </div>
+              <div className="flex items-center justify-end gap-1">
+                <button
+                  onClick={() => openEdit(r)}
+                  className="opacity-0 group-hover:opacity-100 text-[11px] text-slate-500 hover:text-accent px-2 py-1 transition-opacity"
+                >Bearbeiten</button>
+                <button
+                  onClick={() => handleDelete(r.id)}
+                  className="opacity-0 group-hover:opacity-100 text-[11px] text-red-400 hover:text-red-600 px-1.5 py-1 transition-opacity"
+                >✕</button>
+              </div>
+            </div>
+          ))}
+
+          <div className="flex items-center px-5 py-3 border-t border-slate-200">
+            <span className="text-[12px] text-slate-400 tabular-nums">{rollen.length} Rolle{rollen.length !== 1 ? 'n' : ''}</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
