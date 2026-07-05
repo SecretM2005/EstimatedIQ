@@ -61,8 +61,14 @@ class ProjektOut(BaseModel):
     beschreibung: str
     kunde: str
     status: str
+    ablehnungsgrund: str | None = None
     erstellt_am: datetime
     model_config = {"from_attributes": True}
+
+
+class StatusUpdate(BaseModel):
+    status: str
+    ablehnungsgrund: str | None = None
 
 
 class PositionCreate(BaseModel):
@@ -192,6 +198,73 @@ def loesche_projekt(projekt_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Projekt nicht gefunden.")
     db.delete(projekt)
     db.commit()
+
+
+@router.patch("/projekte/{projekt_id}/status", response_model=ProjektOut)
+def setze_projekt_status(projekt_id: int, body: StatusUpdate, db: Session = Depends(get_db)):
+    VALID = {"entwurf", "angeboten", "beauftragt", "abgeschlossen", "abgelehnt"}
+    if body.status not in VALID:
+        raise HTTPException(400, f"Ungültiger Status: {body.status}")
+    p = db.get(Projekt, projekt_id)
+    if not p:
+        raise HTTPException(404, "Projekt nicht gefunden.")
+    p.status = body.status
+    if body.ablehnungsgrund is not None:
+        p.ablehnungsgrund = body.ablehnungsgrund
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.get("/dashboard/stats")
+def dashboard_stats(db: Session = Depends(get_db)):
+    """Aggregierte Kennzahlen für das Dashboard."""
+    sichtbar = [
+        p for p in db.query(Projekt).all()
+        if p.name != "__historisch__" and not p.ist_referenz
+    ]
+
+    counts: dict[str, int] = {}
+    for p in sichtbar:
+        counts[p.status] = counts.get(p.status, 0) + 1
+
+    def projekt_wert(p: Projekt) -> float:
+        return sum(
+            pos.soll_stunden * (pos.stundensatz_snapshot or 0.0)
+            for pos in p.positionen
+            if not pos.ist_historisch
+        )
+
+    gewonnen = counts.get("beauftragt", 0) + counts.get("abgeschlossen", 0)
+    verloren = counts.get("abgelehnt", 0)
+    total_entschieden = gewonnen + verloren
+
+    wert_offen = sum(projekt_wert(p) for p in sichtbar if p.status in ("entwurf", "angeboten"))
+    wert_beauftragt = sum(projekt_wert(p) for p in sichtbar if p.status in ("beauftragt", "abgeschlossen"))
+
+    recent = sorted(sichtbar, key=lambda p: p.erstellt_am, reverse=True)[:8]
+
+    return {
+        "counts": counts,
+        "n_offen": counts.get("entwurf", 0) + counts.get("angeboten", 0),
+        "n_beauftragt": counts.get("beauftragt", 0),
+        "n_abgeschlossen": counts.get("abgeschlossen", 0),
+        "n_abgelehnt": counts.get("abgelehnt", 0),
+        "gewinnrate": gewonnen / total_entschieden if total_entschieden > 0 else None,
+        "wert_offen": wert_offen,
+        "wert_beauftragt": wert_beauftragt,
+        "recent": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "status": p.status,
+                "kunde": p.kunde or "–",
+                "wert": projekt_wert(p),
+                "erstellt_am": p.erstellt_am.isoformat(),
+            }
+            for p in recent
+        ],
+    }
 
 
 # ── Leistungspositionen ───────────────────────────────────────────────────────

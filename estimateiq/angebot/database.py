@@ -37,6 +37,7 @@ def _migrate_db() -> None:
         ("projekte",            "kunde",         "TEXT NOT NULL DEFAULT ''"),
         ("projekte",            "ist_referenz",  "BOOLEAN NOT NULL DEFAULT 0"),
         ("projekte",            "embedding_json","TEXT"),
+        ("projekte",            "ablehnungsgrund", "TEXT"),
         ("leistungspositionen", "stundensatz_snapshot", "REAL"),
         ("leistungspositionen", "embedding_json","TEXT"),
         ("leistungspositionen", "ist_historisch","BOOLEAN NOT NULL DEFAULT 0"),

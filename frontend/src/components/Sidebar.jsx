@@ -1,4 +1,4 @@
-import { NavLink, useLocation } from 'react-router-dom'
+import { NavLink } from 'react-router-dom'
 
 const Logo = () => (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
@@ -46,12 +46,41 @@ export default function Sidebar() {
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto px-3 pb-4 flex flex-col gap-0.5">
         <div className="text-[10px] font-bold tracking-[0.06em] uppercase text-slate-400 px-3 pt-3 pb-1.5">
+          Übersicht
+        </div>
+
+        <NavItem
+          to="/"
+          end
+          label="Dashboard"
+          icon={
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="flex-none">
+              <rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.9"/>
+              <rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.9"/>
+              <rect x="3" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.9"/>
+              <rect x="14" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.9"/>
+            </svg>
+          }
+        />
+
+        <div className="text-[10px] font-bold tracking-[0.06em] uppercase text-slate-400 px-3 pt-4 pb-1.5">
           Arbeitsbereich
         </div>
 
         <NavItem
+          to="/angebote"
+          label="Angebote"
+          icon={
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="flex-none">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round"/>
+              <path d="M14 2v6h6M9 13h6M9 17h4" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"/>
+            </svg>
+          }
+        />
+
+        <NavItem
           to="/projekte"
-          label="Projekte & Angebote"
+          label="Projekte"
           icon={
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="flex-none">
               <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round"/>

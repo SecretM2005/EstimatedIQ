@@ -3,11 +3,59 @@ import { useParams, Link } from 'react-router-dom'
 import {
   getProjekt, getPositionen, createPosition, deletePosition,
   updateIstStunden, sucheAehnliche, createAngebot, getPdfUrl, getRollen,
-  sucheReferenzprojekte, vorlagUebernehmen, updateProjekt,
+  sucheReferenzprojekte, vorlagUebernehmen, updateProjekt, updateProjektStatus,
 } from '../api/angebot'
 
 const fmtEUR = n =>
   new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n)
+
+const STATUS_META = {
+  entwurf:      { label: 'Entwurf',      bg: '#fffbeb', color: '#b45309', border: '#fef3c7' },
+  angeboten:    { label: 'Angeboten',    bg: '#eef2ff', color: '#4f46e5', border: '#e0e7ff' },
+  beauftragt:   { label: 'Beauftragt',   bg: '#ecfdf5', color: '#047857', border: '#d1fae5' },
+  abgeschlossen:{ label: 'Abgeschlossen',bg: '#f8fafc', color: '#64748b', border: '#e2e8f0' },
+  abgelehnt:    { label: 'Abgelehnt',    bg: '#fef2f2', color: '#b91c1c', border: '#fecaca' },
+}
+
+function StatusBadge({ status }) {
+  const s = STATUS_META[status] || STATUS_META.entwurf
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', height: 24, padding: '0 10px',
+      fontSize: 12, fontWeight: 600, borderRadius: 999,
+      background: s.bg, color: s.color, border: `1px solid ${s.border}`,
+    }}>{s.label}</span>
+  )
+}
+
+function AblehnungModal({ onConfirm, onCancel }) {
+  const [grund, setGrund] = useState('')
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-md p-6">
+        <h3 className="text-[15px] font-semibold text-slate-900 mb-1">Angebot ablehnen</h3>
+        <p className="text-[13px] text-slate-500 mb-4">
+          Der Ablehnungsgrund wird für die spätere ML-Verbesserung gespeichert.
+        </p>
+        <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5">
+          Ablehnungsgrund (optional)
+        </label>
+        <textarea
+          value={grund}
+          onChange={e => setGrund(e.target.value)}
+          rows={3}
+          placeholder="z. B. Preis zu hoch, Vergabe an Mitbewerber, Projekt abgesagt …"
+          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-red-400/30 focus:border-red-400 resize-none"
+          autoFocus
+        />
+        <div className="flex gap-2 mt-4 justify-end">
+          <button onClick={onCancel} className="h-9 px-4 bg-white border border-slate-200 rounded-lg text-[13px] font-semibold text-slate-700 hover:bg-slate-50 transition-colors">Abbrechen</button>
+          <button onClick={() => onConfirm(grund)} className="h-9 px-4 bg-red-600 hover:bg-red-700 text-white rounded-lg text-[13px] font-semibold transition-colors">Als abgelehnt markieren</button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function SimilarityBar({ value }) {
   const pct = Math.round(value * 100)
@@ -53,6 +101,9 @@ export default function ProjektDetail() {
   const [editBeschreibung,   setEditBeschreibung]   = useState(false)
   const [beschreibungText,   setBeschreibungText]   = useState('')
   const [savingBeschreibung, setSavingBeschreibung] = useState(false)
+
+  const [statusSaving, setStatusSaving] = useState(false)
+  const [ablehnModal,  setAblehnModal]  = useState(false)
 
   const load = useCallback(async () => {
     const [p, pos, r] = await Promise.all([
@@ -154,6 +205,14 @@ export default function ProjektDetail() {
     setEditIstId(null); load()
   }
 
+  const handleStatusChange = async (status, ablehnungsgrund = null) => {
+    setStatusSaving(true)
+    try {
+      await updateProjektStatus(projekt_id, { status, ablehnungsgrund })
+      load()
+    } finally { setStatusSaving(false) }
+  }
+
   const handlePdf = async () => {
     setPdfLoading(true)
     try {
@@ -184,9 +243,15 @@ export default function ProjektDetail() {
         {/* Header */}
         <div className="flex items-start justify-between gap-6 mb-6">
           <div className="flex-1 min-w-0">
-            <h1 className="text-[24px] font-bold tracking-tight text-slate-900 m-0 truncate">{projekt?.name}</h1>
+            <div className="flex items-center gap-3 mb-1 flex-wrap">
+              <h1 className="text-[24px] font-bold tracking-tight text-slate-900 m-0 truncate">{projekt?.name}</h1>
+              <StatusBadge status={projekt?.status} />
+            </div>
             {projekt?.kunde && (
-              <p className="text-[13px] text-slate-500 mt-0.5">{projekt.kunde}</p>
+              <p className="text-[13px] text-slate-500">{projekt.kunde}</p>
+            )}
+            {projekt?.status === 'abgelehnt' && projekt?.ablehnungsgrund && (
+              <p className="text-[12.5px] text-red-500 mt-1 italic">Abgelehnt: {projekt.ablehnungsgrund}</p>
             )}
 
             {/* Editable description */}
@@ -240,6 +305,46 @@ export default function ProjektDetail() {
               <p className="text-[11px] text-slate-400 uppercase tracking-wide font-semibold mb-0.5">Angebotssumme</p>
               <p className="text-[28px] font-bold text-slate-900 tabular-nums leading-none">{fmtEUR(gesamtSoll)}</p>
             </div>
+            {/* Status actions */}
+            <div className="flex gap-2 flex-wrap justify-end">
+              {projekt?.status === 'entwurf' && (
+                <button
+                  onClick={() => handleStatusChange('angeboten')}
+                  disabled={statusSaving}
+                  className="h-9 px-3 bg-indigo-50 hover:bg-indigo-100 text-accent border border-indigo-100 rounded-lg text-[13px] font-semibold transition-colors disabled:opacity-50 inline-flex items-center"
+                >
+                  Versenden →
+                </button>
+              )}
+              {projekt?.status === 'angeboten' && (
+                <>
+                  <button
+                    onClick={() => handleStatusChange('beauftragt')}
+                    disabled={statusSaving}
+                    className="h-9 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-100 rounded-lg text-[13px] font-semibold transition-colors disabled:opacity-50 inline-flex items-center"
+                  >
+                    ✓ Auftrag erhalten
+                  </button>
+                  <button
+                    onClick={() => setAblehnModal(true)}
+                    disabled={statusSaving}
+                    className="h-9 px-3 bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 rounded-lg text-[13px] font-semibold transition-colors disabled:opacity-50 inline-flex items-center"
+                  >
+                    Ablehnen
+                  </button>
+                </>
+              )}
+              {projekt?.status === 'beauftragt' && (
+                <button
+                  onClick={() => handleStatusChange('abgeschlossen')}
+                  disabled={statusSaving}
+                  className="h-9 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg text-[13px] font-semibold transition-colors disabled:opacity-50 inline-flex items-center"
+                >
+                  Abschließen
+                </button>
+              )}
+            </div>
+
             <div className="flex gap-2">
               <Link
                 to={`/projekte/${projekt_id}/nachkalkulation`}
@@ -542,6 +647,17 @@ export default function ProjektDetail() {
           )}
         </div>
       </div>
+
+      {/* Rejection modal */}
+      {ablehnModal && (
+        <AblehnungModal
+          onConfirm={async (grund) => {
+            setAblehnModal(false)
+            await handleStatusChange('abgelehnt', grund || null)
+          }}
+          onCancel={() => setAblehnModal(false)}
+        />
+      )}
     </div>
   )
 }

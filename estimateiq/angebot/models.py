@@ -35,6 +35,7 @@ class Projekt(Base):
     status: Mapped[str] = mapped_column(String(50), default="entwurf")
     ist_referenz: Mapped[bool] = mapped_column(Boolean, default=False)
     embedding_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ablehnungsgrund: Mapped[str | None] = mapped_column(Text, nullable=True)
     erstellt_am: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     def get_embedding(self) -> list[float] | None:

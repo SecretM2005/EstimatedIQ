@@ -1,10 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { getProjekte, createProjekt, deleteProjekt } from '../api/angebot'
+import { useNavigate } from 'react-router-dom'
+import { getProjekte, deleteProjekt } from '../api/angebot'
 
 const STATUS_PILL = {
-  entwurf:       { label: 'Entwurf',       bg: '#fffbeb', color: '#b45309', border: '#fef3c7' },
-  angeboten:     { label: 'Angeboten',     bg: '#eef2ff', color: '#4f46e5', border: '#e0e7ff' },
   beauftragt:    { label: 'Beauftragt',    bg: '#ecfdf5', color: '#047857', border: '#d1fae5' },
   abgeschlossen: { label: 'Abgeschlossen', bg: '#f8fafc', color: '#64748b', border: '#e2e8f0' },
 }
@@ -24,27 +22,12 @@ function StatusPill({ status }) {
 
 export default function Projekte() {
   const [projekte,     setProjekte]     = useState([])
-  const [loading,      setLoading]      = useState(true)
-  const [showForm,     setShowForm]     = useState(false)
-  const [name,         setName]         = useState('')
-  const [beschreibung, setBeschreibung] = useState('')
-  const [kunde,        setKunde]        = useState('')
-  const [saving,       setSaving]       = useState(false)
-  const [search,       setSearch]       = useState('')
+  const [loading, setLoading] = useState(true)
+  const [search,  setSearch]  = useState('')
   const navigate = useNavigate()
 
   const load = () => getProjekte().then(setProjekte).finally(() => setLoading(false))
   useEffect(() => { load() }, [])
-
-  const handleCreate = async (e) => {
-    e.preventDefault()
-    if (!name.trim()) return
-    setSaving(true)
-    try {
-      const neu = await createProjekt({ name: name.trim(), beschreibung: beschreibung.trim(), kunde: kunde.trim() })
-      navigate(`/projekte/${neu.id}`)
-    } finally { setSaving(false) }
-  }
 
   const handleDelete = async (id) => {
     if (!confirm('Projekt und alle Positionen löschen?')) return
@@ -53,7 +36,7 @@ export default function Projekte() {
   }
 
   const visible = projekte
-    .filter(p => p.name !== '__historisch__' && !p.ist_referenz)
+    .filter(p => p.name !== '__historisch__' && !p.ist_referenz && ['beauftragt', 'abgeschlossen'].includes(p.status))
     .filter(p => !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.kunde?.toLowerCase().includes(search.toLowerCase()))
 
   return (
@@ -61,56 +44,12 @@ export default function Projekte() {
       {/* Page header */}
       <div className="flex items-end justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-[24px] font-bold tracking-tight text-slate-900 m-0">Projekte & Angebote</h1>
+          <h1 className="text-[24px] font-bold tracking-tight text-slate-900 m-0">Projekte</h1>
           <p className="mt-1.5 text-[13.5px] text-slate-500">
-            {visible.length} Projekt{visible.length !== 1 ? 'e' : ''} · Leistungserfassung und Angebotskalkulation
+            {visible.length} Projekt{visible.length !== 1 ? 'e' : ''} · Beauftragte und abgeschlossene Projekte
           </p>
         </div>
-        <button
-          onClick={() => setShowForm(v => !v)}
-          className="h-10 inline-flex items-center gap-2 px-4 bg-accent hover:bg-accent-hover text-white text-[13.5px] font-semibold rounded-lg transition-colors shadow-accent"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg>
-          Neues Projekt
-        </button>
       </div>
-
-      {/* Create form */}
-      {showForm && (
-        <form onSubmit={handleCreate} className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs mb-5 flex flex-col gap-4">
-          <h2 className="text-[14px] font-semibold text-slate-900">Projekt anlegen</h2>
-          <div className="grid sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5">Projektname *</label>
-              <input
-                value={name} onChange={e => setName(e.target.value)} required
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5">Kunde</label>
-              <input
-                value={kunde} onChange={e => setKunde(e.target.value)}
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent"
-              />
-            </div>
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5">Projektbeschreibung</label>
-            <textarea
-              value={beschreibung} onChange={e => setBeschreibung(e.target.value)} rows={2}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent resize-none"
-            />
-            <p className="text-[11px] text-slate-400 mt-1">Wird für die Ähnlichkeitssuche nach Referenzprojekten genutzt.</p>
-          </div>
-          <div className="flex gap-2 justify-end">
-            <button type="button" onClick={() => setShowForm(false)} className="h-9 px-4 bg-white border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">Abbrechen</button>
-            <button type="submit" disabled={saving} className="h-9 px-4 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50">
-              {saving ? 'Speichern…' : 'Anlegen'}
-            </button>
-          </div>
-        </form>
-      )}
 
       {/* Filter bar */}
       <div className="flex items-center gap-3 mb-4">
@@ -132,8 +71,8 @@ export default function Projekte() {
         <div className="text-slate-400 text-center py-20 text-sm">Lade…</div>
       ) : visible.length === 0 ? (
         <div className="bg-white border border-slate-200 rounded-xl p-16 text-center shadow-xs">
-          <p className="text-[15px] font-semibold text-slate-900 mb-1">Noch keine Projekte</p>
-          <p className="text-sm text-slate-500">Lege dein erstes Projekt an oder importiere historische Daten.</p>
+          <p className="text-[15px] font-semibold text-slate-900 mb-1">Keine Projekte</p>
+          <p className="text-sm text-slate-500">Projekte entstehen, wenn ein Angebot als beauftragt markiert wird.</p>
         </div>
       ) : (
         <div className="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
