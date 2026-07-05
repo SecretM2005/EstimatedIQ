@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useLocation } from 'react-router-dom'
 import {
   getProjekt, getPositionen, createPosition, deletePosition,
   updateIstStunden, sucheAehnliche, createAngebot, getPdfUrl, getRollen,
@@ -75,6 +75,8 @@ function SimilarityBar({ value }) {
 export default function ProjektDetail() {
   const { id }     = useParams()
   const projekt_id = parseInt(id)
+  const location   = useLocation()
+  const isAngebot  = location.pathname.startsWith('/angebote/')
 
   const [projekt,    setProjekt]    = useState(null)
   const [positionen, setPositionen] = useState([])
@@ -114,17 +116,19 @@ export default function ProjektDetail() {
     setProjekt(p); setPositionen(pos); setRollen(r)
     setBeschreibungText(p.beschreibung || '')
     setLoading(false)
-    const suchbeschreibung = p.beschreibung?.trim() || p.name
-    try {
-      const refs = await sucheReferenzprojekte({
-        beschreibung:       suchbeschreibung,
-        name:               p.name,
-        k:                  1,
-        exclude_projekt_id: projekt_id,
-      })
-      setRefErgebnisse(refs)
-    } catch { setRefErgebnisse([]) }
-  }, [projekt_id])
+    if (isAngebot) {
+      const suchbeschreibung = p.beschreibung?.trim() || p.name
+      try {
+        const refs = await sucheReferenzprojekte({
+          beschreibung:       suchbeschreibung,
+          name:               p.name,
+          k:                  1,
+          exclude_projekt_id: projekt_id,
+        })
+        setRefErgebnisse(refs)
+      } catch { setRefErgebnisse([]) }
+    }
+  }, [projekt_id, isAngebot])
 
   useEffect(() => { load() }, [load])
 
@@ -228,16 +232,16 @@ export default function ProjektDetail() {
   const bestRef = refErgebnisse?.length > 0 ? refErgebnisse[0] : null
 
   return (
-    <div className="flex items-start">
+    <div className={isAngebot ? "flex items-start" : ""}>
       {/* Main content */}
-      <div className="flex-1 min-w-0 p-8 pb-16">
+      <div className={isAngebot ? "flex-1 min-w-0 p-8 pb-16" : "p-8 pb-16 max-w-[900px]"}>
         {/* Breadcrumb */}
         <Link
-          to="/projekte"
+          to={isAngebot ? '/angebote' : '/projekte'}
           className="inline-flex items-center gap-1 text-[12px] text-slate-400 hover:text-slate-600 mb-4 transition-colors"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-          Projekte
+          {isAngebot ? 'Angebote' : 'Projekte'}
         </Link>
 
         {/* Header */}
@@ -302,7 +306,7 @@ export default function ProjektDetail() {
           {/* Actions + total */}
           <div className="shrink-0 flex flex-col items-end gap-3">
             <div className="text-right">
-              <p className="text-[11px] text-slate-400 uppercase tracking-wide font-semibold mb-0.5">Angebotssumme</p>
+              <p className="text-[11px] text-slate-400 uppercase tracking-wide font-semibold mb-0.5">{isAngebot ? 'Angebotssumme' : 'Projektsumme'}</p>
               <p className="text-[28px] font-bold text-slate-900 tabular-nums leading-none">{fmtEUR(gesamtSoll)}</p>
             </div>
             {/* Status actions */}
@@ -346,12 +350,14 @@ export default function ProjektDetail() {
             </div>
 
             <div className="flex gap-2">
-              <Link
-                to={`/projekte/${projekt_id}/nachkalkulation`}
-                className="h-9 px-3 bg-white border border-slate-200 rounded-lg text-[13px] font-semibold text-slate-700 hover:bg-slate-50 transition-colors inline-flex items-center"
-              >
-                Nachkalkulation
-              </Link>
+              {!isAngebot && (
+                <Link
+                  to={`/projekte/${projekt_id}/nachkalkulation`}
+                  className="h-9 px-3 bg-white border border-slate-200 rounded-lg text-[13px] font-semibold text-slate-700 hover:bg-slate-50 transition-colors inline-flex items-center"
+                >
+                  Nachkalkulation
+                </Link>
+              )}
               <button
                 onClick={handlePdf}
                 disabled={pdfLoading || aktivPositionen.length === 0}
@@ -574,8 +580,8 @@ export default function ProjektDetail() {
         </div>
       </div>
 
-      {/* Right panel — reference project, sticky */}
-      <div className="w-[352px] flex-none border-l border-slate-200 bg-white sticky top-0 max-h-screen overflow-y-auto">
+      {/* Right panel — reference project, only shown for Angebote */}
+      {isAngebot && <div className="w-[352px] flex-none border-l border-slate-200 bg-white sticky top-0 max-h-screen overflow-y-auto">
         <div className="p-5">
           <div className="flex items-center gap-2 mb-4">
             <div className="w-6 h-6 rounded-md bg-indigo-50 flex items-center justify-center flex-none">
@@ -646,7 +652,7 @@ export default function ProjektDetail() {
             </div>
           )}
         </div>
-      </div>
+      </div>}
 
       {/* Rejection modal */}
       {ablehnModal && (

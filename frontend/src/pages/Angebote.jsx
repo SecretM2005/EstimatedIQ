@@ -105,7 +105,7 @@ export default function Angebote() {
     setSaving(true)
     try {
       const neu = await createProjekt({ name: name.trim(), beschreibung: beschreibung.trim(), kunde: kunde.trim() })
-      navigate(`/projekte/${neu.id}`)
+      navigate(`/angebote/${neu.id}`)
     } finally { setSaving(false) }
   }
 
@@ -251,7 +251,7 @@ export default function Angebote() {
               {/* Name */}
               <div
                 className="min-w-0 pr-4 cursor-pointer"
-                onClick={() => navigate(`/projekte/${p.id}`)}
+                onClick={() => navigate(`/angebote/${p.id}`)}
               >
                 <div className="text-[13px] font-semibold text-slate-900 truncate">{p.name}</div>
                 <div className="text-[11px] text-slate-400 mt-0.5">{new Date(p.erstellt_am).toLocaleDateString('de-DE')}</div>
