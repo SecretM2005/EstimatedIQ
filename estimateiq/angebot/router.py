@@ -48,12 +48,22 @@ class ProjektCreate(BaseModel):
     name: str
     beschreibung: str = ""
     kunde: str = ""
+    leitung: str = ""
+    auftragswert: float | None = None
+    abrechnung_typ: str = ""
+    laufzeit_start: str = ""
+    laufzeit_end: str = ""
 
 class ProjektUpdate(BaseModel):
     name: str | None = None
     beschreibung: str | None = None
     kunde: str | None = None
     status: str | None = None
+    leitung: str | None = None
+    auftragswert: float | None = None
+    abrechnung_typ: str | None = None
+    laufzeit_start: str | None = None
+    laufzeit_end: str | None = None
 
 class ProjektOut(BaseModel):
     id: int
@@ -62,7 +72,16 @@ class ProjektOut(BaseModel):
     kunde: str
     status: str
     ablehnungsgrund: str | None = None
+    leitung: str | None = None
+    auftragswert: float | None = None
+    abrechnung_typ: str | None = None
+    laufzeit_start: str | None = None
+    laufzeit_end: str | None = None
     erstellt_am: datetime
+    soll_stunden_gesamt: float = 0.0
+    ist_stunden_gesamt: float = 0.0
+    soll_kosten: float = 0.0
+    ist_kosten: float = 0.0
     model_config = {"from_attributes": True}
 
 
@@ -76,6 +95,7 @@ class PositionCreate(BaseModel):
     soll_stunden: float
     rolle_id: int | None = None
     stundensatz_eur: float | None = None  # überschreibt den Rollensatz
+    phase: str = ""
 
 class PositionIstUpdate(BaseModel):
     ist_stunden: float
@@ -87,6 +107,7 @@ class PositionOut(BaseModel):
     soll_stunden: float
     ist_stunden: float | None
     stundensatz_snapshot: float | None
+    phase: str | None = None
     rolle_id: int | None
     rolle_name: str | None = None
     ist_historisch: bool
@@ -112,6 +133,19 @@ class AngebotOut(BaseModel):
     pdf_pfad: str | None
     erstellt_am: datetime
     model_config = {"from_attributes": True}
+
+
+# ── Hilfsfunktionen ───────────────────────────────────────────────────────────
+
+def _projekt_out(p: Projekt) -> ProjektOut:
+    """Erstellt ProjektOut mit berechneten Stunden- und Kostenaggregaten."""
+    out = ProjektOut.model_validate(p)
+    aktiv = [pos for pos in p.positionen if not pos.ist_historisch]
+    out.soll_stunden_gesamt = sum(pos.soll_stunden for pos in aktiv)
+    out.ist_stunden_gesamt  = sum(pos.ist_stunden or 0.0 for pos in aktiv)
+    out.soll_kosten = sum(pos.soll_stunden * (pos.stundensatz_snapshot or 0.0) for pos in aktiv)
+    out.ist_kosten  = sum((pos.ist_stunden or 0.0) * (pos.stundensatz_snapshot or 0.0) for pos in aktiv)
+    return out
 
 
 # ── Rollen ────────────────────────────────────────────────────────────────────
@@ -159,16 +193,23 @@ def loesche_rolle(rolle_id: int, db: Session = Depends(get_db)):
 
 @router.get("/projekte", response_model=list[ProjektOut])
 def liste_projekte(db: Session = Depends(get_db)):
-    return db.query(Projekt).order_by(Projekt.erstellt_am.desc()).all()
+    projekte = db.query(Projekt).order_by(Projekt.erstellt_am.desc()).all()
+    return [_projekt_out(p) for p in projekte]
 
 
 @router.post("/projekte", response_model=ProjektOut, status_code=201)
 def erstelle_projekt(body: ProjektCreate, db: Session = Depends(get_db)):
-    projekt = Projekt(name=body.name, beschreibung=body.beschreibung, kunde=body.kunde)
+    projekt = Projekt(
+        name=body.name, beschreibung=body.beschreibung, kunde=body.kunde,
+        leitung=body.leitung or None, auftragswert=body.auftragswert,
+        abrechnung_typ=body.abrechnung_typ or None,
+        laufzeit_start=body.laufzeit_start or None,
+        laufzeit_end=body.laufzeit_end or None,
+    )
     db.add(projekt)
     db.commit()
     db.refresh(projekt)
-    return projekt
+    return _projekt_out(projekt)
 
 
 @router.get("/projekte/{projekt_id}", response_model=ProjektOut)
@@ -176,7 +217,7 @@ def hole_projekt(projekt_id: int, db: Session = Depends(get_db)):
     projekt = db.get(Projekt, projekt_id)
     if not projekt:
         raise HTTPException(404, "Projekt nicht gefunden.")
-    return projekt
+    return _projekt_out(projekt)
 
 
 @router.patch("/projekte/{projekt_id}", response_model=ProjektOut)
@@ -188,7 +229,7 @@ def aktualisiere_projekt(projekt_id: int, body: ProjektUpdate, db: Session = Dep
         setattr(projekt, field, val)
     db.commit()
     db.refresh(projekt)
-    return projekt
+    return _projekt_out(projekt)
 
 
 @router.delete("/projekte/{projekt_id}", status_code=204)
@@ -213,7 +254,7 @@ def setze_projekt_status(projekt_id: int, body: StatusUpdate, db: Session = Depe
         p.ablehnungsgrund = body.ablehnungsgrund
     db.commit()
     db.refresh(p)
-    return p
+    return _projekt_out(p)
 
 
 @router.get("/dashboard/stats")
@@ -312,6 +353,7 @@ def erstelle_position(projekt_id: int, body: PositionCreate, db: Session = Depen
         beschreibung_text=body.beschreibung_text,
         soll_stunden=body.soll_stunden,
         stundensatz_snapshot=stundensatz_snapshot,
+        phase=body.phase or None,
     )
     if vec:
         pos.set_embedding(vec)

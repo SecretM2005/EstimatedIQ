@@ -38,9 +38,15 @@ def _migrate_db() -> None:
         ("projekte",            "ist_referenz",  "BOOLEAN NOT NULL DEFAULT 0"),
         ("projekte",            "embedding_json","TEXT"),
         ("projekte",            "ablehnungsgrund", "TEXT"),
+        ("projekte",            "leitung",         "TEXT"),
+        ("projekte",            "auftragswert",    "REAL"),
+        ("projekte",            "abrechnung_typ",  "TEXT"),
+        ("projekte",            "laufzeit_start",  "TEXT"),
+        ("projekte",            "laufzeit_end",    "TEXT"),
         ("leistungspositionen", "stundensatz_snapshot", "REAL"),
         ("leistungspositionen", "embedding_json","TEXT"),
         ("leistungspositionen", "ist_historisch","BOOLEAN NOT NULL DEFAULT 0"),
+        ("leistungspositionen", "phase",           "TEXT"),
     ]
     with engine.connect() as conn:
         for table, column, definition in migrations:

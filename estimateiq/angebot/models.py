@@ -36,6 +36,11 @@ class Projekt(Base):
     ist_referenz: Mapped[bool] = mapped_column(Boolean, default=False)
     embedding_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     ablehnungsgrund: Mapped[str | None] = mapped_column(Text, nullable=True)
+    leitung: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    auftragswert: Mapped[float | None] = mapped_column(Float, nullable=True)
+    abrechnung_typ: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    laufzeit_start: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    laufzeit_end: Mapped[str | None] = mapped_column(String(20), nullable=True)
     erstellt_am: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     def get_embedding(self) -> list[float] | None:
@@ -64,6 +69,7 @@ class Leistungsposition(Base):
     soll_stunden: Mapped[float] = mapped_column(Float, nullable=False)
     ist_stunden: Mapped[float | None] = mapped_column(Float, nullable=True)
     stundensatz_snapshot: Mapped[float | None] = mapped_column(Float, nullable=True)
+    phase: Mapped[str | None] = mapped_column(String(100), nullable=True)
     embedding_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     ist_historisch: Mapped[bool] = mapped_column(Boolean, default=False)
     erstellt_am: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
