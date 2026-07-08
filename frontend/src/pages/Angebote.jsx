@@ -5,6 +5,9 @@ import { getProjekte, createProjekt, deleteProjekt, updateProjektStatus } from '
 const fmtEUR = n =>
   new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n)
 
+const ANG_NR = p =>
+  `ANG-${new Date(p.erstellt_am).getFullYear()}-${String(p.id).padStart(4, '0')}`
+
 const STATUS_META = {
   entwurf:   { label: 'Entwurf',   bg: '#fffbeb', color: '#b45309', border: '#fef3c7' },
   angeboten: { label: 'Angeboten', bg: '#eef2ff', color: '#4f46e5', border: '#e0e7ff' },
@@ -128,8 +131,10 @@ export default function Angebote() {
     return null
   }
 
+  const COL = '2.2fr 1.4fr 120px 150px 1.6fr 240px 44px'
+
   return (
-    <div className="p-8 pb-16 max-w-[1360px]">
+    <div className="p-8 pb-16">
       {/* Header */}
       <div className="flex items-end justify-between gap-4 mb-6">
         <div>
@@ -236,35 +241,44 @@ export default function Angebote() {
         <div className="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
           {/* Head */}
           <div className="grid items-center px-5 py-2.5 bg-slate-50 border-b border-slate-200"
-            style={{ gridTemplateColumns: '2fr 1.2fr 100px 1fr 260px 40px' }}>
-            {['Angebot', 'Kunde', 'Status', 'Beschreibung', 'Aktionen', ''].map(h => (
-              <span key={h} className="text-[10.5px] font-semibold uppercase tracking-[0.04em] text-slate-400">{h}</span>
+            style={{ gridTemplateColumns: COL }}>
+            {['Angebot', 'Kunde', 'Status', 'Volumen', 'Beschreibung', 'Aktionen', ''].map(h => (
+              <span key={h} className="text-[10px] font-semibold uppercase tracking-[0.06em] text-slate-400">{h}</span>
             ))}
           </div>
 
           {visible.map((p) => (
             <div
               key={p.id}
-              className="grid items-center px-5 py-3.5 border-t border-slate-100 hover:bg-slate-50/70 transition-colors group"
-              style={{ gridTemplateColumns: '2fr 1.2fr 100px 1fr 260px 40px' }}
+              className="grid items-center px-5 py-3 border-t border-slate-100 hover:bg-slate-50/70 transition-colors group cursor-pointer"
+              style={{ gridTemplateColumns: COL }}
+              onClick={() => navigate(`/angebote/${p.id}`)}
             >
-              {/* Name */}
-              <div
-                className="min-w-0 pr-4 cursor-pointer"
-                onClick={() => navigate(`/angebote/${p.id}`)}
-              >
-                <div className="text-[13px] font-semibold text-slate-900 truncate">{p.name}</div>
-                <div className="text-[11px] text-slate-400 mt-0.5">{new Date(p.erstellt_am).toLocaleDateString('de-DE')}</div>
+              {/* Angebot: name + ANG-Nr + Datum */}
+              <div className="min-w-0 pr-4">
+                <p className="text-[13.5px] font-semibold text-slate-900 truncate leading-snug">{p.name}</p>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="text-[11px] text-accent/70 font-semibold tabular-nums">{ANG_NR(p)}</span>
+                  <span className="text-[10.5px] text-slate-300">·</span>
+                  <span className="text-[10.5px] text-slate-400">{new Date(p.erstellt_am).toLocaleDateString('de-DE')}</span>
+                </div>
               </div>
 
               {/* Kunde */}
-              <div className="text-[12.5px] text-slate-700 truncate pr-3">{p.kunde || '–'}</div>
+              <div className="text-[13px] text-slate-700 truncate pr-3">{p.kunde || '–'}</div>
 
               {/* Status */}
               <div><StatusPill status={p.status} /></div>
 
+              {/* Volumen */}
+              <div>
+                {p.soll_kosten > 0
+                  ? <span className="text-[13px] font-semibold text-slate-900 tabular-nums">{fmtEUR(p.soll_kosten)}</span>
+                  : <span className="text-[13px] text-slate-300">–</span>}
+              </div>
+
               {/* Beschreibung */}
-              <div className="text-[12px] text-slate-500 truncate pr-4 italic">{p.beschreibung || '–'}</div>
+              <div className="text-[12px] text-slate-400 truncate pr-4 italic">{p.beschreibung || '–'}</div>
 
               {/* Actions */}
               <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
@@ -273,9 +287,7 @@ export default function Angebote() {
                     onClick={() => handleStatus(p.id, 'angeboten')}
                     disabled={actionId === p.id}
                     className="h-7 px-2.5 bg-indigo-50 hover:bg-indigo-100 text-accent text-[11.5px] font-semibold rounded-lg border border-indigo-100 transition-colors disabled:opacity-50 whitespace-nowrap"
-                  >
-                    Versenden →
-                  </button>
+                  >Versenden →</button>
                 )}
                 {p.status === 'angeboten' && (
                   <>
@@ -283,16 +295,12 @@ export default function Angebote() {
                       onClick={() => handleStatus(p.id, 'beauftragt')}
                       disabled={actionId === p.id}
                       className="h-7 px-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-[11.5px] font-semibold rounded-lg border border-emerald-100 transition-colors disabled:opacity-50 whitespace-nowrap"
-                    >
-                      ✓ Auftrag
-                    </button>
+                    >✓ Auftrag</button>
                     <button
                       onClick={() => setAblehnModal(p.id)}
                       disabled={actionId === p.id}
                       className="h-7 px-2.5 bg-red-50 hover:bg-red-100 text-red-600 text-[11.5px] font-semibold rounded-lg border border-red-100 transition-colors disabled:opacity-50 whitespace-nowrap"
-                    >
-                      Ablehnen
-                    </button>
+                    >Ablehnen</button>
                   </>
                 )}
                 {p.status === 'abgelehnt' && (
@@ -300,24 +308,29 @@ export default function Angebote() {
                     onClick={() => handleStatus(p.id, 'entwurf')}
                     disabled={actionId === p.id}
                     className="h-7 px-2.5 bg-slate-50 hover:bg-slate-100 text-slate-600 text-[11.5px] font-semibold rounded-lg border border-slate-200 transition-colors disabled:opacity-50 whitespace-nowrap"
-                  >
-                    Reaktivieren
-                  </button>
+                  >Reaktivieren</button>
                 )}
               </div>
 
-              {/* Delete */}
-              <div className="flex items-center justify-end">
+              {/* Chevron + delete */}
+              <div className="flex items-center justify-end gap-1" onClick={e => e.stopPropagation()}>
                 <button
                   onClick={e => { e.stopPropagation(); handleDelete(p.id) }}
-                  className="opacity-0 group-hover:opacity-100 text-[11px] text-red-400 hover:text-red-600 px-1.5 py-1 transition-opacity"
+                  className="opacity-0 group-hover:opacity-100 text-[11px] text-red-400 hover:text-red-600 px-1 py-1 transition-opacity"
+                  title="Löschen"
                 >✕</button>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                  className="text-slate-300 group-hover:text-slate-400 transition-colors flex-none">
+                  <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
               </div>
             </div>
           ))}
 
-          <div className="flex items-center justify-between px-5 py-3 border-t border-slate-200">
-            <span className="text-[12px] text-slate-400 tabular-nums">{visible.length} Angebot{visible.length !== 1 ? 'e' : ''}</span>
+          <div className="flex items-center justify-between px-5 py-3 border-t border-slate-200 bg-slate-50/50">
+            <span className="text-[12px] text-slate-400 tabular-nums">
+              {visible.length} Angebot{visible.length !== 1 ? 'e' : ''}
+            </span>
           </div>
         </div>
       )}
