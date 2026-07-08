@@ -177,22 +177,6 @@ export default function Rollen() {
             </div>
           )}
 
-          {/* Tips */}
-          <div className="bg-white border border-slate-200 rounded-xl shadow-xs p-5">
-            <h3 className="text-[13px] font-semibold text-slate-900 mb-3">Hinweise</h3>
-            <div className="flex flex-col gap-3">
-              {[
-                { icon: '💡', text: 'Rollen werden Positionen in Angeboten zugewiesen und steuern den Stundensatz.' },
-                { icon: '📊', text: 'Der Stundensatz wird beim Erstellen einer Position als Snapshot gespeichert.' },
-                { icon: '🔄', text: 'Änderungen an Stundensätzen wirken sich nicht rückwirkend auf bestehende Positionen aus.' },
-              ].map(({ icon, text }, i) => (
-                <div key={i} className="flex gap-2.5">
-                  <span className="text-[16px] mt-0.5 shrink-0">{icon}</span>
-                  <p className="text-[12px] text-slate-500 leading-relaxed">{text}</p>
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
       </div>
     </div>
