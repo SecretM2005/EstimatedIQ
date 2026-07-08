@@ -1,4 +1,6 @@
 import { NavLink } from 'react-router-dom'
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../auth/AuthProvider'
 
 const Logo = () => (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
@@ -32,6 +34,10 @@ function NavItem({ to, icon, label, badge, end }) {
 }
 
 export default function Sidebar() {
+  const { user, signOut } = useAuth()
+  const email    = user?.email
+  const initiale = email ? email.slice(0, 2).toUpperCase() : 'EI'
+
   return (
     <aside className="w-[250px] flex-none bg-white border-r border-slate-200 flex flex-col h-full overflow-hidden">
       {/* Logo */}
@@ -118,12 +124,28 @@ export default function Sidebar() {
       <div className="border-t border-slate-200 p-3">
         <div className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg">
           <span className="w-8 h-8 rounded-full bg-slate-200 text-slate-600 text-[11px] font-bold flex items-center justify-center flex-none select-none">
-            EI
+            {initiale}
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-[12.5px] font-semibold text-slate-900 truncate">EstimateIQ</span>
-            <span className="block text-[11px] text-slate-400">Kalkulations-Tool</span>
+            <span className="block text-[12.5px] font-semibold text-slate-900 truncate">
+              {email || 'EstimateIQ'}
+            </span>
+            <span className="block text-[11px] text-slate-400">
+              {email ? 'Angemeldet' : 'Kalkulations-Tool'}
+            </span>
           </span>
+          {supabase && (
+            <button
+              onClick={signOut}
+              title="Abmelden"
+              className="flex-none w-7 h-7 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"
+                  stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </button>
+          )}
         </div>
       </div>
     </aside>

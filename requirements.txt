@@ -25,6 +25,9 @@ tokenizers==0.20.3
 # Datenbank
 supabase==2.10.0
 sqlalchemy==2.0.36
+psycopg2-binary==2.9.10   # Postgres-Treiber (Supabase)
+pgvector==0.3.6           # vector(384)-Spalten + Cosine-Suche in SQL
+PyJWT[crypto]==2.10.1     # Supabase-JWT-Verifikation (HS256 + JWKS)
 
 # Angebotskalkulation MVP
 sentence-transformers==3.3.1

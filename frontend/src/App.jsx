@@ -1,5 +1,8 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
+import { supabase }     from './lib/supabase'
+import { useAuth }      from './auth/AuthProvider'
 import Sidebar          from './components/Sidebar'
+import Login            from './pages/Login'
 import Dashboard        from './pages/Dashboard'
 import Angebote         from './pages/Angebote'
 import Projekte         from './pages/Projekte'
@@ -9,6 +12,20 @@ import Rollen           from './pages/Rollen'
 import HistorischImport from './pages/HistorischImport'
 
 export default function App() {
+  const { session, loading } = useAuth()
+
+  // Login nur, wenn Supabase konfiguriert ist (sonst lokale Entwicklung ohne Auth)
+  if (supabase) {
+    if (loading) {
+      return (
+        <div className="h-full flex items-center justify-center bg-slate-50">
+          <span className="text-sm text-slate-400">Lade…</span>
+        </div>
+      )
+    }
+    if (!session) return <Login />
+  }
+
   return (
     <div className="flex h-full overflow-hidden bg-slate-50">
       <Sidebar />

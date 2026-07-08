@@ -1,54 +1,73 @@
 """
-Cosine-Ähnlichkeitssuche über Leistungspositionen.
+Cosine-Ähnlichkeitssuche über Leistungspositionen und Referenzprojekte.
+
+Zwei Backends:
+  - Postgres/pgvector: Distanz wird in SQL berechnet (embedding <=> query),
+    inkl. HNSW-Index – skaliert auch bei großen Datenmengen.
+  - SQLite: Fallback mit numpy-Cosine in Python (lokale Entwicklung).
+
+Alle Suchen sind strikt tenant-gefiltert – tenant_id ist Pflichtparameter.
 """
 
 from __future__ import annotations
+
 import numpy as np
 from sqlalchemy.orm import Session
+
+from estimateiq.angebot.config import IS_POSTGRES
 from estimateiq.angebot.models import Leistungsposition, Projekt
+
+
+def _cosine_topk_python(query_vec: list[float], objekte: list, k: int) -> list[tuple[float, object]]:
+    """Numpy-Fallback: Cosine-Similarity über bereits geladene ORM-Objekte."""
+    query_arr = np.array(query_vec, dtype=np.float32)
+    kandidaten = []
+    for obj in objekte:
+        vec = obj.get_embedding()
+        if vec is None:
+            continue
+        arr = np.array(vec, dtype=np.float32)
+        kandidaten.append((float(np.dot(query_arr, arr)), obj))
+    kandidaten.sort(key=lambda x: x[0], reverse=True)
+    return kandidaten[:k]
 
 
 def suche_aehnliche(
     query_vec: list[float],
     db: Session,
+    tenant_id: str,
     k: int = 5,
     nur_historisch: bool = False,
     exclude_projekt_id: int | None = None,
 ) -> dict:
     """
-    Gibt die k ähnlichsten Leistungspositionen zurück.
+    Gibt die k ähnlichsten Leistungspositionen des Tenants zurück.
     Vektoren müssen bereits L2-normiert sein (normalize_embeddings=True).
     """
     q = db.query(Leistungsposition).filter(
-        Leistungsposition.embedding_json.isnot(None)
+        Leistungsposition.tenant_id == tenant_id,
+        Leistungsposition.embedding.isnot(None),
     )
     if nur_historisch:
         q = q.filter(Leistungsposition.ist_historisch == True)  # noqa: E712
     if exclude_projekt_id is not None:
         q = q.filter(Leistungsposition.projekt_id != exclude_projekt_id)
 
-    positionen = q.all()
-    if not positionen:
-        return {
-            "treffer": [],
-            "schaetzvorschlag": None,
-            "konfidenz": "niedrig",
-            "avg_aehnlichkeit": 0.0,
-            "n_verglichen": 0,
-        }
-
-    query_arr = np.array(query_vec, dtype=np.float32)
-    kandidaten = []
-    for pos in positionen:
-        vec = pos.get_embedding()
-        if vec is None:
-            continue
-        arr = np.array(vec, dtype=np.float32)
-        sim = float(np.dot(query_arr, arr))
-        kandidaten.append((sim, pos))
-
-    kandidaten.sort(key=lambda x: x[0], reverse=True)
-    top = kandidaten[:k]
+    if IS_POSTGRES:
+        n_verglichen = q.count()
+        distanz = Leistungsposition.embedding.cosine_distance(query_vec)
+        zeilen = (
+            q.add_columns(distanz.label("dist"))
+            .order_by(distanz)
+            .limit(k)
+            .all()
+        )
+        # Normierte Vektoren: Similarity = 1 − Cosine-Distanz
+        top = [(1.0 - dist, pos) for pos, dist in zeilen]
+    else:
+        positionen = q.all()
+        n_verglichen = len(positionen)
+        top = _cosine_topk_python(query_vec, positionen, k)
 
     if not top:
         return {
@@ -56,7 +75,7 @@ def suche_aehnliche(
             "schaetzvorschlag": None,
             "konfidenz": "niedrig",
             "avg_aehnlichkeit": 0.0,
-            "n_verglichen": len(positionen),
+            "n_verglichen": n_verglichen,
         }
 
     avg_sim = sum(s for s, _ in top) / len(top)
@@ -95,43 +114,35 @@ def suche_aehnliche(
         "schaetzvorschlag":  round(vorschlag, 1),
         "konfidenz":         konfidenz,
         "avg_aehnlichkeit":  round(avg_sim, 4),
-        "n_verglichen":      len(positionen),
+        "n_verglichen":      n_verglichen,
     }
 
 
 def suche_aehnliche_projekte(
     query_vec: list[float],
     db: Session,
+    tenant_id: str,
     k: int = 3,
     exclude_projekt_id: int | None = None,
 ) -> list[dict]:
     """
-    Findet die k ähnlichsten Referenzprojekte anhand ihres Projekt-Embeddings.
-    Gibt für jedes Treffer-Projekt auch seine Positionen zurück.
+    Findet die k ähnlichsten Referenzprojekte des Tenants anhand ihres
+    Projekt-Embeddings. Gibt für jeden Treffer auch die Positionen zurück.
     """
     q = db.query(Projekt).filter(
+        Projekt.tenant_id == tenant_id,
         Projekt.ist_referenz == True,  # noqa: E712
-        Projekt.embedding_json.isnot(None),
+        Projekt.embedding.isnot(None),
     )
     if exclude_projekt_id is not None:
         q = q.filter(Projekt.id != exclude_projekt_id)
 
-    projekte = q.all()
-    if not projekte:
-        return []
-
-    query_arr = np.array(query_vec, dtype=np.float32)
-    kandidaten = []
-    for proj in projekte:
-        vec = proj.get_embedding()
-        if vec is None:
-            continue
-        arr = np.array(vec, dtype=np.float32)
-        sim = float(np.dot(query_arr, arr))
-        kandidaten.append((sim, proj))
-
-    kandidaten.sort(key=lambda x: x[0], reverse=True)
-    top = kandidaten[:k]
+    if IS_POSTGRES:
+        distanz = Projekt.embedding.cosine_distance(query_vec)
+        zeilen = q.add_columns(distanz.label("dist")).order_by(distanz).limit(k).all()
+        top = [(1.0 - dist, proj) for proj, dist in zeilen]
+    else:
+        top = _cosine_topk_python(query_vec, q.all(), k)
 
     ergebnisse = []
     for sim, proj in top:

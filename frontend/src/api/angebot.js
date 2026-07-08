@@ -1,6 +1,21 @@
 import axios from 'axios'
+import { supabase } from '../lib/supabase'
 
-const api = axios.create({ baseURL: '/api/v2', timeout: 60000 })
+const api = axios.create({
+  baseURL: (import.meta.env.VITE_API_URL || '') + '/api/v2',
+  timeout: 60000,
+})
+
+// Supabase-Access-Token an jeden Request hängen (getSession liest aus dem
+// lokalen Cache und refresht bei Bedarf automatisch).
+api.interceptors.request.use(async (config) => {
+  if (supabase) {
+    const { data } = await supabase.auth.getSession()
+    const token = data.session?.access_token
+    if (token) config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
 
 // Rollen
 export const getRollen        = ()         => api.get('/rollen').then(r => r.data)

@@ -158,9 +158,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+from estimateiq.angebot import config as angebot_config  # noqa: E402
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=angebot_config.CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -1,11 +1,15 @@
 """
 FastAPI-Router für Angebotskalkulation MVP.
 Alle Endpunkte unter /api/v2/
+
+Multi-Tenancy: Jeder Endpunkt löst über get_tenant_id() den Tenant aus dem
+Supabase-JWT auf und filtert JEDE Query darauf. Objekte fremder Tenants
+verhalten sich wie nicht existent (404).
 """
 
 from __future__ import annotations
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -13,6 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from estimateiq.angebot.auth import get_tenant_id
 from estimateiq.angebot.database import get_db
 from estimateiq.angebot.models import Rolle, Projekt, Leistungsposition, Angebot
 from estimateiq.angebot.similarity import suche_aehnliche, suche_aehnliche_projekte
@@ -148,18 +153,62 @@ def _projekt_out(p: Projekt) -> ProjektOut:
     return out
 
 
+def _hole_projekt(db: Session, tenant_id: str, projekt_id: int) -> Projekt:
+    """Lädt ein Projekt tenant-sicher oder wirft 404."""
+    projekt = (
+        db.query(Projekt)
+        .filter(Projekt.id == projekt_id, Projekt.tenant_id == tenant_id)
+        .first()
+    )
+    if not projekt:
+        raise HTTPException(404, "Projekt nicht gefunden.")
+    return projekt
+
+
+def _hole_position(db: Session, tenant_id: str, position_id: int) -> Leistungsposition:
+    """Lädt eine Position tenant-sicher oder wirft 404."""
+    pos = (
+        db.query(Leistungsposition)
+        .filter(
+            Leistungsposition.id == position_id,
+            Leistungsposition.tenant_id == tenant_id,
+        )
+        .first()
+    )
+    if not pos:
+        raise HTTPException(404, "Position nicht gefunden.")
+    return pos
+
+
 # ── Rollen ────────────────────────────────────────────────────────────────────
 
 @router.get("/rollen", response_model=list[RolleOut])
-def liste_rollen(db: Session = Depends(get_db)):
-    return db.query(Rolle).order_by(Rolle.name).all()
+def liste_rollen(
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    return (
+        db.query(Rolle)
+        .filter(Rolle.tenant_id == tenant_id)
+        .order_by(Rolle.name)
+        .all()
+    )
 
 
 @router.post("/rollen", response_model=RolleOut, status_code=201)
-def erstelle_rolle(body: RolleCreate, db: Session = Depends(get_db)):
-    if db.query(Rolle).filter(Rolle.name == body.name).first():
+def erstelle_rolle(
+    body: RolleCreate,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    existiert = (
+        db.query(Rolle)
+        .filter(Rolle.tenant_id == tenant_id, Rolle.name == body.name)
+        .first()
+    )
+    if existiert:
         raise HTTPException(409, f"Rolle '{body.name}' existiert bereits.")
-    rolle = Rolle(name=body.name, stundensatz_eur=body.stundensatz_eur)
+    rolle = Rolle(tenant_id=tenant_id, name=body.name, stundensatz_eur=body.stundensatz_eur)
     db.add(rolle)
     db.commit()
     db.refresh(rolle)
@@ -167,8 +216,17 @@ def erstelle_rolle(body: RolleCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/rollen/{rolle_id}", response_model=RolleOut)
-def aktualisiere_rolle(rolle_id: int, body: RolleUpdate, db: Session = Depends(get_db)):
-    rolle = db.get(Rolle, rolle_id)
+def aktualisiere_rolle(
+    rolle_id: int,
+    body: RolleUpdate,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    rolle = (
+        db.query(Rolle)
+        .filter(Rolle.id == rolle_id, Rolle.tenant_id == tenant_id)
+        .first()
+    )
     if not rolle:
         raise HTTPException(404, "Rolle nicht gefunden.")
     if body.name is not None:
@@ -181,10 +239,27 @@ def aktualisiere_rolle(rolle_id: int, body: RolleUpdate, db: Session = Depends(g
 
 
 @router.delete("/rollen/{rolle_id}", status_code=204)
-def loesche_rolle(rolle_id: int, db: Session = Depends(get_db)):
-    rolle = db.get(Rolle, rolle_id)
+def loesche_rolle(
+    rolle_id: int,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    rolle = (
+        db.query(Rolle)
+        .filter(Rolle.id == rolle_id, Rolle.tenant_id == tenant_id)
+        .first()
+    )
     if not rolle:
         raise HTTPException(404, "Rolle nicht gefunden.")
+    # Referenzen lösen, damit das Löschen auch mit FK-Constraints (Postgres) klappt
+    (
+        db.query(Leistungsposition)
+        .filter(
+            Leistungsposition.tenant_id == tenant_id,
+            Leistungsposition.rolle_id == rolle_id,
+        )
+        .update({Leistungsposition.rolle_id: None})
+    )
     db.delete(rolle)
     db.commit()
 
@@ -192,14 +267,27 @@ def loesche_rolle(rolle_id: int, db: Session = Depends(get_db)):
 # ── Projekte ──────────────────────────────────────────────────────────────────
 
 @router.get("/projekte", response_model=list[ProjektOut])
-def liste_projekte(db: Session = Depends(get_db)):
-    projekte = db.query(Projekt).order_by(Projekt.erstellt_am.desc()).all()
+def liste_projekte(
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    projekte = (
+        db.query(Projekt)
+        .filter(Projekt.tenant_id == tenant_id)
+        .order_by(Projekt.erstellt_am.desc())
+        .all()
+    )
     return [_projekt_out(p) for p in projekte]
 
 
 @router.post("/projekte", response_model=ProjektOut, status_code=201)
-def erstelle_projekt(body: ProjektCreate, db: Session = Depends(get_db)):
+def erstelle_projekt(
+    body: ProjektCreate,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
     projekt = Projekt(
+        tenant_id=tenant_id,
         name=body.name, beschreibung=body.beschreibung, kunde=body.kunde,
         leitung=body.leitung or None, auftragswert=body.auftragswert,
         abrechnung_typ=body.abrechnung_typ or None,
@@ -213,18 +301,22 @@ def erstelle_projekt(body: ProjektCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/projekte/{projekt_id}", response_model=ProjektOut)
-def hole_projekt(projekt_id: int, db: Session = Depends(get_db)):
-    projekt = db.get(Projekt, projekt_id)
-    if not projekt:
-        raise HTTPException(404, "Projekt nicht gefunden.")
-    return _projekt_out(projekt)
+def hole_projekt(
+    projekt_id: int,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    return _projekt_out(_hole_projekt(db, tenant_id, projekt_id))
 
 
 @router.patch("/projekte/{projekt_id}", response_model=ProjektOut)
-def aktualisiere_projekt(projekt_id: int, body: ProjektUpdate, db: Session = Depends(get_db)):
-    projekt = db.get(Projekt, projekt_id)
-    if not projekt:
-        raise HTTPException(404, "Projekt nicht gefunden.")
+def aktualisiere_projekt(
+    projekt_id: int,
+    body: ProjektUpdate,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    projekt = _hole_projekt(db, tenant_id, projekt_id)
     for field, val in body.model_dump(exclude_unset=True).items():
         setattr(projekt, field, val)
     db.commit()
@@ -233,22 +325,27 @@ def aktualisiere_projekt(projekt_id: int, body: ProjektUpdate, db: Session = Dep
 
 
 @router.delete("/projekte/{projekt_id}", status_code=204)
-def loesche_projekt(projekt_id: int, db: Session = Depends(get_db)):
-    projekt = db.get(Projekt, projekt_id)
-    if not projekt:
-        raise HTTPException(404, "Projekt nicht gefunden.")
+def loesche_projekt(
+    projekt_id: int,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    projekt = _hole_projekt(db, tenant_id, projekt_id)
     db.delete(projekt)
     db.commit()
 
 
 @router.patch("/projekte/{projekt_id}/status", response_model=ProjektOut)
-def setze_projekt_status(projekt_id: int, body: StatusUpdate, db: Session = Depends(get_db)):
+def setze_projekt_status(
+    projekt_id: int,
+    body: StatusUpdate,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
     VALID = {"entwurf", "angeboten", "beauftragt", "abgeschlossen", "abgelehnt"}
     if body.status not in VALID:
         raise HTTPException(400, f"Ungültiger Status: {body.status}")
-    p = db.get(Projekt, projekt_id)
-    if not p:
-        raise HTTPException(404, "Projekt nicht gefunden.")
+    p = _hole_projekt(db, tenant_id, projekt_id)
     p.status = body.status
     if body.ablehnungsgrund is not None:
         p.ablehnungsgrund = body.ablehnungsgrund
@@ -258,10 +355,13 @@ def setze_projekt_status(projekt_id: int, body: StatusUpdate, db: Session = Depe
 
 
 @router.get("/dashboard/stats")
-def dashboard_stats(db: Session = Depends(get_db)):
+def dashboard_stats(
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
     """Aggregierte Kennzahlen für das Dashboard."""
     sichtbar = [
-        p for p in db.query(Projekt).all()
+        p for p in db.query(Projekt).filter(Projekt.tenant_id == tenant_id).all()
         if p.name != "__historisch__" and not p.ist_referenz
     ]
 
@@ -311,10 +411,18 @@ def dashboard_stats(db: Session = Depends(get_db)):
 # ── Leistungspositionen ───────────────────────────────────────────────────────
 
 @router.get("/projekte/{projekt_id}/positionen", response_model=list[PositionOut])
-def liste_positionen(projekt_id: int, db: Session = Depends(get_db)):
+def liste_positionen(
+    projekt_id: int,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    _hole_projekt(db, tenant_id, projekt_id)
     positionen = (
         db.query(Leistungsposition)
-        .filter(Leistungsposition.projekt_id == projekt_id)
+        .filter(
+            Leistungsposition.tenant_id == tenant_id,
+            Leistungsposition.projekt_id == projekt_id,
+        )
         .order_by(Leistungsposition.erstellt_am)
         .all()
     )
@@ -327,11 +435,24 @@ def liste_positionen(projekt_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/projekte/{projekt_id}/positionen", response_model=PositionOut, status_code=201)
-def erstelle_position(projekt_id: int, body: PositionCreate, db: Session = Depends(get_db)):
-    if not db.get(Projekt, projekt_id):
-        raise HTTPException(404, "Projekt nicht gefunden.")
+def erstelle_position(
+    projekt_id: int,
+    body: PositionCreate,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    _hole_projekt(db, tenant_id, projekt_id)
 
-    rolle = db.get(Rolle, body.rolle_id) if body.rolle_id else None
+    rolle = None
+    if body.rolle_id:
+        rolle = (
+            db.query(Rolle)
+            .filter(Rolle.id == body.rolle_id, Rolle.tenant_id == tenant_id)
+            .first()
+        )
+        if not rolle:
+            raise HTTPException(404, "Rolle nicht gefunden.")
+
     # Expliziter Satz schlägt Rollensatz
     if body.stundensatz_eur is not None:
         stundensatz_snapshot = body.stundensatz_eur
@@ -348,6 +469,7 @@ def erstelle_position(projekt_id: int, body: PositionCreate, db: Session = Depen
         vec = None
 
     pos = Leistungsposition(
+        tenant_id=tenant_id,
         projekt_id=projekt_id,
         rolle_id=body.rolle_id,
         beschreibung_text=body.beschreibung_text,
@@ -368,10 +490,13 @@ def erstelle_position(projekt_id: int, body: PositionCreate, db: Session = Depen
 
 
 @router.patch("/positionen/{position_id}/ist-stunden", response_model=PositionOut)
-def trage_ist_stunden_nach(position_id: int, body: PositionIstUpdate, db: Session = Depends(get_db)):
-    pos = db.get(Leistungsposition, position_id)
-    if not pos:
-        raise HTTPException(404, "Position nicht gefunden.")
+def trage_ist_stunden_nach(
+    position_id: int,
+    body: PositionIstUpdate,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    pos = _hole_position(db, tenant_id, position_id)
     pos.ist_stunden = body.ist_stunden
     db.commit()
     db.refresh(pos)
@@ -381,10 +506,12 @@ def trage_ist_stunden_nach(position_id: int, body: PositionIstUpdate, db: Sessio
 
 
 @router.delete("/positionen/{position_id}", status_code=204)
-def loesche_position(position_id: int, db: Session = Depends(get_db)):
-    pos = db.get(Leistungsposition, position_id)
-    if not pos:
-        raise HTTPException(404, "Position nicht gefunden.")
+def loesche_position(
+    position_id: int,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    pos = _hole_position(db, tenant_id, position_id)
     db.delete(pos)
     db.commit()
 
@@ -392,7 +519,11 @@ def loesche_position(position_id: int, db: Session = Depends(get_db)):
 # ── Ähnlichkeitssuche ─────────────────────────────────────────────────────────
 
 @router.post("/positionen/suche")
-def suche_positionen(body: SucheRequest, db: Session = Depends(get_db)):
+def suche_positionen(
+    body: SucheRequest,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
     try:
         from estimateiq.angebot.embeddings import embed
         vec = embed(body.beschreibung_text)
@@ -402,6 +533,7 @@ def suche_positionen(body: SucheRequest, db: Session = Depends(get_db)):
     return suche_aehnliche(
         query_vec=vec,
         db=db,
+        tenant_id=tenant_id,
         k=body.k,
         nur_historisch=body.nur_historisch,
         exclude_projekt_id=body.exclude_projekt_id,
@@ -414,6 +546,7 @@ def suche_positionen(body: SucheRequest, db: Session = Depends(get_db)):
 async def importiere_positionen(
     file: UploadFile = File(...),
     db:   Session    = Depends(get_db),
+    tenant_id: str   = Depends(get_tenant_id),
 ):
     data   = await file.read()
     parsed = parse_upload(data, file.filename or "upload.csv")
@@ -431,9 +564,13 @@ async def importiere_positionen(
         if not name:
             return None
         if name not in rollen_cache:
-            rolle = db.query(Rolle).filter(Rolle.name == name).first()
+            rolle = (
+                db.query(Rolle)
+                .filter(Rolle.tenant_id == tenant_id, Rolle.name == name)
+                .first()
+            )
             if not rolle:
-                rolle = Rolle(name=name, stundensatz_eur=0.0)
+                rolle = Rolle(tenant_id=tenant_id, name=name, stundensatz_eur=0.0)
                 db.add(rolle)
                 db.flush()
             rollen_cache[name] = rolle
@@ -450,11 +587,13 @@ async def importiere_positionen(
 
             # Bestehendes Referenzprojekt finden oder neu anlegen
             ref_projekt = db.query(Projekt).filter(
+                Projekt.tenant_id == tenant_id,
                 Projekt.name == proj_name,
                 Projekt.ist_referenz == True,  # noqa: E712
             ).first()
             if not ref_projekt:
                 ref_projekt = Projekt(
+                    tenant_id=tenant_id,
                     name=proj_name, kunde="Referenz",
                     status="abgeschlossen", ist_referenz=True,
                 )
@@ -467,6 +606,7 @@ async def importiere_positionen(
 
             for i, p_data in enumerate(positionen_data):
                 pos = Leistungsposition(
+                    tenant_id=tenant_id,
                     projekt_id=ref_projekt.id,
                     rolle_id=_hole_oder_erstelle_rolle(p_data.get("rolle_name") or ""),
                     beschreibung_text=p_data["beschreibung_text"],
@@ -502,14 +642,21 @@ async def importiere_positionen(
         vecs  = embed_batch(texte) if embed_batch else [None] * len(texte)
 
         HIST_NAME = "__historisch__"
-        hist_projekt = db.query(Projekt).filter(Projekt.name == HIST_NAME).first()
+        hist_projekt = db.query(Projekt).filter(
+            Projekt.tenant_id == tenant_id,
+            Projekt.name == HIST_NAME,
+        ).first()
         if not hist_projekt:
-            hist_projekt = Projekt(name=HIST_NAME, kunde="Import", status="abgeschlossen")
+            hist_projekt = Projekt(
+                tenant_id=tenant_id,
+                name=HIST_NAME, kunde="Import", status="abgeschlossen",
+            )
             db.add(hist_projekt)
             db.flush()
 
         for i, p_data in enumerate(einzelpositionen):
             pos = Leistungsposition(
+                tenant_id=tenant_id,
                 projekt_id=hist_projekt.id,
                 rolle_id=_hole_oder_erstelle_rolle(p_data.get("rolle_name") or ""),
                 beschreibung_text=p_data["beschreibung_text"],
@@ -537,7 +684,11 @@ class ReferenzSucheRequest(BaseModel):
 
 
 @router.post("/referenzprojekte/suche")
-def suche_referenzprojekte(body: ReferenzSucheRequest, db: Session = Depends(get_db)):
+def suche_referenzprojekte(
+    body: ReferenzSucheRequest,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
     # Beschreibung ist primär; Name wird nachgestellt für zusätzlichen Kontext
     suchtext = body.beschreibung.strip()
     if body.name.strip() and body.name.strip() not in suchtext:
@@ -552,6 +703,7 @@ def suche_referenzprojekte(body: ReferenzSucheRequest, db: Session = Depends(get
     return suche_aehnliche_projekte(
         query_vec=vec,
         db=db,
+        tenant_id=tenant_id,
         k=body.k,
         exclude_projekt_id=body.exclude_projekt_id,
     )
@@ -564,17 +716,24 @@ def vorlage_uebernehmen(
     projekt_id:   int,
     referenz_id:  int,
     db:           Session = Depends(get_db),
+    tenant_id:    str     = Depends(get_tenant_id),
 ):
     """Kopiert alle Positionen eines Referenzprojekts in das Zielprojekt."""
-    if not db.get(Projekt, projekt_id):
-        raise HTTPException(404, "Zielprojekt nicht gefunden.")
-    ref = db.get(Projekt, referenz_id)
+    _hole_projekt(db, tenant_id, projekt_id)
+    ref = (
+        db.query(Projekt)
+        .filter(Projekt.id == referenz_id, Projekt.tenant_id == tenant_id)
+        .first()
+    )
     if not ref or not ref.ist_referenz:
         raise HTTPException(404, "Referenzprojekt nicht gefunden.")
 
     quell_positionen = (
         db.query(Leistungsposition)
-        .filter(Leistungsposition.projekt_id == referenz_id)
+        .filter(
+            Leistungsposition.tenant_id == tenant_id,
+            Leistungsposition.projekt_id == referenz_id,
+        )
         .order_by(Leistungsposition.erstellt_am)
         .all()
     )
@@ -582,12 +741,13 @@ def vorlage_uebernehmen(
     kopiert = 0
     for src in quell_positionen:
         neu = Leistungsposition(
+            tenant_id=tenant_id,
             projekt_id=projekt_id,
             rolle_id=src.rolle_id,
             beschreibung_text=src.beschreibung_text,
             soll_stunden=src.soll_stunden,
             stundensatz_snapshot=src.stundensatz_snapshot,
-            embedding_json=src.embedding_json,
+            embedding=src.embedding,
             ist_historisch=False,
         )
         db.add(neu)
@@ -600,11 +760,15 @@ def vorlage_uebernehmen(
 # ── Angebote ──────────────────────────────────────────────────────────────────
 
 @router.post("/projekte/{projekt_id}/angebote", response_model=AngebotOut, status_code=201)
-def erstelle_angebot(projekt_id: int, body: AngebotCreate, db: Session = Depends(get_db)):
-    projekt = db.get(Projekt, projekt_id)
-    if not projekt:
-        raise HTTPException(404, "Projekt nicht gefunden.")
+def erstelle_angebot(
+    projekt_id: int,
+    body: AngebotCreate,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    projekt = _hole_projekt(db, tenant_id, projekt_id)
     angebot = Angebot(
+        tenant_id=tenant_id,
         projekt_id=projekt_id,
         titel=body.titel or f"Angebot {projekt.name}",
     )
@@ -615,8 +779,16 @@ def erstelle_angebot(projekt_id: int, body: AngebotCreate, db: Session = Depends
 
 
 @router.get("/angebote/{angebot_id}/pdf")
-def exportiere_pdf(angebot_id: int, db: Session = Depends(get_db)):
-    angebot = db.get(Angebot, angebot_id)
+def exportiere_pdf(
+    angebot_id: int,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
+    angebot = (
+        db.query(Angebot)
+        .filter(Angebot.id == angebot_id, Angebot.tenant_id == tenant_id)
+        .first()
+    )
     if not angebot:
         raise HTTPException(404, "Angebot nicht gefunden.")
 
@@ -624,6 +796,7 @@ def exportiere_pdf(angebot_id: int, db: Session = Depends(get_db)):
     positionen_db = (
         db.query(Leistungsposition)
         .filter(
+            Leistungsposition.tenant_id == tenant_id,
             Leistungsposition.projekt_id == angebot.projekt_id,
             Leistungsposition.ist_historisch == False,  # noqa: E712
         )
