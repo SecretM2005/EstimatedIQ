@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useParams, Link, useLocation } from 'react-router-dom'
 import {
   getProjekt, getPositionen, createPosition, deletePosition,
-  updateIstStunden, sucheAehnliche, createAngebot, getPdfUrl, getRollen,
+  updateIstStunden, sucheAehnliche, createAngebot, openAngebotPdf, getRollen,
   sucheReferenzprojekte, vorlagUebernehmen, updateProjekt, updateProjektStatus,
 } from '../api/angebot'
 
@@ -255,7 +255,7 @@ export default function ProjektDetail() {
     setPdfLoading(true)
     try {
       const a = await createAngebot(projekt_id, { titel: `Angebot ${projekt?.name}` })
-      window.open(getPdfUrl(a.id), '_blank')
+      await openAngebotPdf(a.id)
     } finally { setPdfLoading(false) }
   }
 

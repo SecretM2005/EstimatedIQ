@@ -59,4 +59,10 @@ export const getDashboardStats   = ()          => api.get('/dashboard/stats').th
 
 // Angebote (PDF)
 export const createAngebot    = (pId, b)   => api.post(`/projekte/${pId}/angebote`, b).then(r => r.data)
-export const getPdfUrl        = (id)       => `/api/v2/angebote/${id}/pdf`
+// Lädt das PDF über axios (Bearer-Token via Interceptor) und öffnet es im neuen Tab
+export const openAngebotPdf = async (id) => {
+  const res = await api.get(`/angebote/${id}/pdf`, { responseType: 'blob', timeout: 120000 })
+  const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }))
+  window.open(url, '_blank')
+  setTimeout(() => URL.revokeObjectURL(url), 60000)
+}

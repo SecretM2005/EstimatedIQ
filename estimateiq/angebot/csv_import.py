@@ -31,6 +31,20 @@ def _find_col(df: pd.DataFrame, aliases: set[str]) -> str | None:
     return None
 
 
+def _dekodiere_csv(data: bytes) -> str:
+    """
+    Dekodiert CSV-Bytes robust: UTF-8 (mit/ohne BOM) zuerst, dann cp1252
+    (Standard bei deutschen Excel-Exporten). latin-1 als letzter Fallback
+    kann nie fehlschlagen.
+    """
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("latin-1")
+
+
 def parse_upload(data: bytes, filename: str) -> dict:
     """
     Parst CSV oder Excel.
@@ -50,16 +64,17 @@ def parse_upload(data: bytes, filename: str) -> dict:
         if suffix in {".xlsx", ".xls"}:
             df = pd.read_excel(io.BytesIO(data))
         else:
+            text = _dekodiere_csv(data)
             for sep in (",", ";", "\t"):
                 try:
-                    candidate = pd.read_csv(io.BytesIO(data), sep=sep)
+                    candidate = pd.read_csv(io.StringIO(text), sep=sep)
                     if len(candidate.columns) > 1:
                         df = candidate
                         break
                 except Exception:
                     continue
             if df is None:
-                df = pd.read_csv(io.BytesIO(data))
+                df = pd.read_csv(io.StringIO(text))
     except Exception as e:
         return {
             "projekte": [], "einzelpositionen": [], "fehler": [str(e)],

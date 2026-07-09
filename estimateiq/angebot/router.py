@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from estimateiq.angebot.auth import get_tenant_id
 from estimateiq.angebot.database import get_db
-from estimateiq.angebot.models import Rolle, Projekt, Leistungsposition, Angebot
+from estimateiq.angebot.models import Rolle, Projekt, Leistungsposition, Angebot, Tenant
 from estimateiq.angebot.similarity import suche_aehnliche, suche_aehnliche_projekte
 from estimateiq.angebot.csv_import import parse_upload
 from estimateiq.angebot.pdf_export import erstelle_angebots_pdf
@@ -76,6 +76,7 @@ class ProjektOut(BaseModel):
     beschreibung: str
     kunde: str
     status: str
+    ist_referenz: bool = False
     ablehnungsgrund: str | None = None
     leitung: str | None = None
     auftragswert: float | None = None
@@ -816,8 +817,12 @@ def exportiere_pdf(
             "summe":        pos.soll_stunden * satz,
         })
 
+    tenant = db.get(Tenant, tenant_id)
+    firmenname = tenant.name if tenant and tenant.name else "Ihr Unternehmen"
+
     pdf_bytes = erstelle_angebots_pdf(
         angebot_nr=f"A-{angebot.id:04d}",
+        firmenname=firmenname,
         kunde=projekt.kunde or "–",
         projekt_name=projekt.name,
         positionen=positionen_pdf,

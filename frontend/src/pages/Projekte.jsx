@@ -221,7 +221,7 @@ export default function Projekte() {
   const load = () =>
     getProjekte()
       .then(ps => setProjekte(
-        ps.filter(p => p.name !== '__historisch__' && ['beauftragt', 'abgeschlossen'].includes(p.status))
+        ps.filter(p => p.name !== '__historisch__' && !p.ist_referenz && ['beauftragt', 'abgeschlossen'].includes(p.status))
       ))
       .finally(() => setLoading(false))
 

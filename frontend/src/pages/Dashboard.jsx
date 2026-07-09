@@ -71,7 +71,7 @@ export default function Dashboard() {
     Promise.all([getDashboardStats(), getProjekte()])
       .then(([s, ps]) => {
         setStats(s)
-        setAlleProjekte(ps.filter(p => p.name !== '__historisch__'))
+        setAlleProjekte(ps.filter(p => p.name !== '__historisch__' && !p.ist_referenz))
       })
       .finally(() => setLoading(false))
   }, [])

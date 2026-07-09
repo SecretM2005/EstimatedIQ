@@ -148,6 +148,19 @@ async def lifespan(app: FastAPI):
         logger.info("Angebot-Datenbank initialisiert.")
     except Exception as exc:
         logger.warning("Angebot-DB Init fehlgeschlagen: %s", exc)
+
+    # Embedding-Modell im Hintergrund vorladen, damit der erste echte Request
+    # (Import / Ähnlichkeitssuche) nicht auf den Kaltstart wartet. Der Server
+    # ist sofort ansprechbar; das Modell lädt parallel.
+    def _warmup_embeddings():
+        try:
+            from estimateiq.angebot.embeddings import embed
+            embed("Warmup")
+            logger.info("Embedding-Modell vorgeladen (warmup).")
+        except Exception as exc:
+            logger.warning("Embedding-Warmup fehlgeschlagen: %s", exc)
+
+    _threading.Thread(target=_warmup_embeddings, daemon=True).start()
     yield
 
 
