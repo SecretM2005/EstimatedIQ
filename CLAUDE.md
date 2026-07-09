@@ -72,6 +72,17 @@ AUTH_DISABLED=true uvicorn estimateiq.api.main:app --reload
 cd frontend && npm run dev
 ```
 
+## Demo-Daten (Seed)
+```bash
+# Legt Demo-Tenant, Rollen und 7 Referenzprojekte (44 Positionen) inkl.
+# Embeddings an. Nutzt dieselbe DB-Umschaltung wie die App.
+python -m estimateiq.angebot.seed            # idempotent
+python -m estimateiq.angebot.seed --reset    # Tenant-Daten vorher löschen
+```
+- **Lokal** (`AUTH_DISABLED=true`): seedet in den Dev-Tenant, sofort ohne Login sichtbar.
+- **Supabase**: seedet in "Demo IT-Solutions GmbH"; mit `SUPABASE_SERVICE_ROLE_KEY`
+  wird zusätzlich ein Login-User (`demo@estimateiq.de`) angelegt und zugeordnet.
+
 ## Wichtige Konventionen
 - Kommentare und Log-Meldungen auf Deutsch
 - Alle Beträge in EUR
@@ -80,6 +91,6 @@ cd frontend && npm run dev
 - PDFs unter `data/angebote_pdf/` (nicht im Git)
 
 ## Nächste Schritte
-- [ ] Seed-Skript für Demo-Tenants mit realistischen Projektdaten
+- [x] Seed-Skript für Demo-Tenants mit realistischen Projektdaten
 - [ ] Deployment-Konfiguration (Backend: Railway/Render, Frontend: Vercel)
 - [ ] Angebots-Duplikate vermeiden (PDF-Klick legt aktuell je ein Angebot an)

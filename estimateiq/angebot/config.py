@@ -32,6 +32,9 @@ SQLITE_PATH: Path = _PROJEKT_ROOT / "data" / "estimateiq_angebot.db"
 # ── Supabase Auth ─────────────────────────────────────────────────────────────
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "").strip()
+# Nur für das Seed-Skript: erlaubt die automatische Anlage eines Login-Users
+# über die Supabase-Admin-API. NIE im Frontend verwenden.
+SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 
 AUTH_DISABLED: bool = os.getenv("AUTH_DISABLED", "").strip().lower() in ("1", "true", "yes")
 
