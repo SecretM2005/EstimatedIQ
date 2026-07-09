@@ -246,9 +246,17 @@ def _seed_login_user(tenant_id: str) -> str | None:
     if not (config.SUPABASE_URL and config.SUPABASE_SERVICE_ROLE_KEY):
         return None
 
-    from supabase import create_client
-
-    client = create_client(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY)
+    # Client-Aufbau + Admin-Aufrufe komplett absichern: schlägt die automatische
+    # Anlage fehl (z. B. neuer sb_secret_-Key, den supabase-py noch nicht
+    # akzeptiert), fällt das Skript sauber auf die manuelle Anleitung zurück.
+    try:
+        from supabase import create_client
+        client = create_client(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY)
+    except Exception as exc:
+        print(f"[Hinweis] Automatische Login-User-Anlage nicht möglich: {exc}")
+        print("  (supabase-py akzeptiert die neuen sb_secret_-Keys noch nicht – "
+              "nutze einen Legacy-service_role-Key oder lege den User manuell an.)")
+        return None
 
     # Bestehenden User finden oder neu anlegen
     user_id: str | None = None
@@ -333,18 +341,20 @@ def seed(reset: bool = False) -> None:
         print("\nModus: lokal (AUTH_DISABLED=true) – kein Login nötig.")
         print("Die Daten sind im laufenden Dev-Server sofort sichtbar.")
     else:
-        user_id = _seed_login_user(tenant.id)
         print("\nModus: Supabase.")
+        user_id = _seed_login_user(tenant.id)
         if user_id:
             print("Login-User angelegt und dem Tenant zugeordnet:")
             print(f"  E-Mail:   {DEMO_LOGIN_EMAIL}")
             print(f"  Passwort: {DEMO_LOGIN_PASSWORT}")
         else:
-            print("Kein SUPABASE_SERVICE_ROLE_KEY gesetzt – Login-User bitte manuell:")
-            print("  1. Supabase → Authentication → Users → 'Add user' (E-Mail + Passwort)")
-            print("  2. Benutzer-ID kopieren und im SQL Editor ausführen:")
-            print(f"     insert into tenant_users (user_id, tenant_id, email)")
-            print(f"     values ('<auth-user-id>', '{tenant.id}', '<email>');")
+            print("Login-User bitte manuell anlegen:")
+            print(f"  1. Supabase → Authentication → Users → 'Add user' → 'Create new user'")
+            print(f"     E-Mail: {DEMO_LOGIN_EMAIL}, Passwort: {DEMO_LOGIN_PASSWORT}, 'Auto Confirm User' anhaken")
+            print("  2. Benutzer-UID kopieren und im SQL Editor ausführen:")
+            print("     insert into tenant_users (user_id, tenant_id, email)")
+            print(f"     values ('<USER-UID>', '{tenant.id}', '{DEMO_LOGIN_EMAIL}')")
+            print("     on conflict (user_id) do update set tenant_id = excluded.tenant_id;")
     print("─" * 60)
 
 
