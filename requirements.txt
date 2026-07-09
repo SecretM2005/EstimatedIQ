@@ -2,38 +2,24 @@
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
 pydantic==2.9.2
-
-# HTTP Client (TED API)
-httpx==0.27.2
-
-# Datenverarbeitung
-pandas==2.2.3
-numpy==1.26.4
-pyarrow==17.0.0        # Parquet-Support für pandas
-
-# Machine Learning
-scikit-learn==1.5.2
-xgboost==2.1.3
-joblib==1.4.2
-matplotlib==3.9.2
-
-# NLP / BERT
-transformers==4.46.3
-torch==2.5.1
-tokenizers==0.20.3
+python-multipart          # Datei-Uploads in FastAPI
 
 # Datenbank
-supabase==2.10.0
 sqlalchemy==2.0.36
 psycopg2-binary==2.9.10   # Postgres-Treiber (Supabase)
 pgvector==0.3.6           # vector(384)-Spalten + Cosine-Suche in SQL
+supabase==2.10.0          # Supabase-Client (Auth-Helfer)
 PyJWT[crypto]==2.10.1     # Supabase-JWT-Verifikation (HS256 + JWKS)
 
-# Angebotskalkulation MVP
+# Ähnlichkeitssuche (Embeddings)
+# Hinweis: sentence-transformers zieht torch + transformers als Abhängigkeit.
 sentence-transformers==3.3.1
-reportlab==4.2.5
 
-# Utilities
-python-dotenv==1.0.1   # .env-Dateien für lokale Konfiguration
-python-multipart       # Datei-Uploads in FastAPI
-openpyxl               # Excel-Dateien (.xlsx) lesen
+# Import & Export
+pandas==2.2.3             # CSV/Excel-Import
+numpy==1.26.4             # Cosine-Fallback (SQLite)
+openpyxl                  # Excel-Dateien (.xlsx) lesen
+reportlab==4.2.5          # Angebots-PDF
+
+# Konfiguration
+python-dotenv==1.0.1      # .env-Dateien für lokale Konfiguration
