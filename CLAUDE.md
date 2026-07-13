@@ -90,7 +90,12 @@ python -m estimateiq.angebot.seed --reset    # Tenant-Daten vorher löschen
   Zugriff immer über `get_embedding()` / `set_embedding()`
 - PDFs unter `data/angebote_pdf/` (nicht im Git)
 
+## Deployment
+Siehe `DEPLOYMENT.md` – Backend via `Dockerfile` (Railway/Render), Frontend via
+`frontend/vercel.json` bzw. `netlify.toml`, Supabase-Migrationen `001`+`002`.
+
 ## Nächste Schritte
 - [x] Seed-Skript für Demo-Tenants mit realistischen Projektdaten
-- [ ] Deployment-Konfiguration (Backend: Railway/Render, Frontend: Vercel)
+- [x] Rollen & Ownership (RBAC) innerhalb eines Tenants
+- [x] Deployment-Konfiguration (Backend: Railway/Render, Frontend: Vercel/Netlify)
 - [ ] Angebots-Duplikate vermeiden (PDF-Klick legt aktuell je ein Angebot an)
