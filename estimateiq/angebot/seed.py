@@ -285,9 +285,13 @@ def _seed_login_user(tenant_id: str) -> str | None:
     try:
         tu = db.get(TenantUser, user_id)
         if tu is None:
-            db.add(TenantUser(user_id=user_id, tenant_id=tenant_id, email=DEMO_LOGIN_EMAIL))
+            db.add(TenantUser(
+                user_id=user_id, tenant_id=tenant_id,
+                email=DEMO_LOGIN_EMAIL, rolle="admin",
+            ))
         else:
             tu.tenant_id = tenant_id
+            tu.rolle = "admin"
         db.commit()
     finally:
         db.close()
@@ -352,9 +356,9 @@ def seed(reset: bool = False) -> None:
             print(f"  1. Supabase → Authentication → Users → 'Add user' → 'Create new user'")
             print(f"     E-Mail: {DEMO_LOGIN_EMAIL}, Passwort: {DEMO_LOGIN_PASSWORT}, 'Auto Confirm User' anhaken")
             print("  2. Benutzer-UID kopieren und im SQL Editor ausführen:")
-            print("     insert into tenant_users (user_id, tenant_id, email)")
-            print(f"     values ('<USER-UID>', '{tenant.id}', '{DEMO_LOGIN_EMAIL}')")
-            print("     on conflict (user_id) do update set tenant_id = excluded.tenant_id;")
+            print("     insert into tenant_users (user_id, tenant_id, email, rolle)")
+            print(f"     values ('<USER-UID>', '{tenant.id}', '{DEMO_LOGIN_EMAIL}', 'admin')")
+            print("     on conflict (user_id) do update set tenant_id = excluded.tenant_id, rolle = 'admin';")
     print("─" * 60)
 
 

@@ -69,6 +69,7 @@ def _migrate_sqlite() -> None:
         ("projekte",            "laufzeit_start",  "TEXT"),
         ("projekte",            "laufzeit_end",    "TEXT"),
         ("projekte",            "tenant_id",       f"TEXT NOT NULL DEFAULT '{dev_tenant}'"),
+        ("projekte",            "ersteller_id",    "TEXT"),
         ("leistungspositionen", "stundensatz_snapshot", "REAL"),
         ("leistungspositionen", "embedding_json","TEXT"),
         ("leistungspositionen", "ist_historisch","BOOLEAN NOT NULL DEFAULT 0"),
@@ -76,6 +77,7 @@ def _migrate_sqlite() -> None:
         ("leistungspositionen", "tenant_id",       f"TEXT NOT NULL DEFAULT '{dev_tenant}'"),
         ("rollen",              "tenant_id",       f"TEXT NOT NULL DEFAULT '{dev_tenant}'"),
         ("angebote",            "tenant_id",       f"TEXT NOT NULL DEFAULT '{dev_tenant}'"),
+        ("tenant_users",        "rolle",           "TEXT NOT NULL DEFAULT 'mitglied'"),
     ]
     with engine.connect() as conn:
         for table, column, definition in migrations:

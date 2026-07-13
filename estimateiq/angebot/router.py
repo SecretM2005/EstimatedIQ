@@ -17,9 +17,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from estimateiq.angebot.auth import get_tenant_id
+from estimateiq.angebot.auth import CurrentUser, get_current_user, get_tenant_id
 from estimateiq.angebot.database import get_db
-from estimateiq.angebot.models import Rolle, Projekt, Leistungsposition, Angebot, Tenant
+from estimateiq.angebot.models import Rolle, Projekt, Leistungsposition, Angebot, Tenant, TenantUser
 from estimateiq.angebot.similarity import suche_aehnliche, suche_aehnliche_projekte
 from estimateiq.angebot.csv_import import parse_upload
 from estimateiq.angebot.pdf_export import erstelle_angebots_pdf
@@ -77,6 +77,8 @@ class ProjektOut(BaseModel):
     kunde: str
     status: str
     ist_referenz: bool = False
+    ersteller_id: str | None = None
+    darf_bearbeiten: bool = True
     ablehnungsgrund: str | None = None
     leitung: str | None = None
     auftragswert: float | None = None
@@ -143,7 +145,18 @@ class AngebotOut(BaseModel):
 
 # ── Hilfsfunktionen ───────────────────────────────────────────────────────────
 
-def _projekt_out(p: Projekt) -> ProjektOut:
+def _darf_bearbeiten(projekt: Projekt, user: CurrentUser) -> bool:
+    """
+    Schreibrecht auf ein Projekt: Admins dürfen alles; Mitglieder nur eigene
+    Projekte. Projekte ohne Owner (ersteller_id=NULL, firmenweit) sind nur für
+    Admins editierbar.
+    """
+    if user.ist_admin:
+        return True
+    return projekt.ersteller_id is not None and projekt.ersteller_id == user.user_id
+
+
+def _projekt_out(p: Projekt, user: CurrentUser | None = None) -> ProjektOut:
     """Erstellt ProjektOut mit berechneten Stunden- und Kostenaggregaten."""
     out = ProjektOut.model_validate(p)
     aktiv = [pos for pos in p.positionen if not pos.ist_historisch]
@@ -151,6 +164,7 @@ def _projekt_out(p: Projekt) -> ProjektOut:
     out.ist_stunden_gesamt  = sum(pos.ist_stunden or 0.0 for pos in aktiv)
     out.soll_kosten = sum(pos.soll_stunden * (pos.stundensatz_snapshot or 0.0) for pos in aktiv)
     out.ist_kosten  = sum((pos.ist_stunden or 0.0) * (pos.stundensatz_snapshot or 0.0) for pos in aktiv)
+    out.darf_bearbeiten = _darf_bearbeiten(p, user) if user else True
     return out
 
 
@@ -269,26 +283,26 @@ def loesche_rolle(
 
 @router.get("/projekte", response_model=list[ProjektOut])
 def liste_projekte(
+    nur_meine: bool = False,
     db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_tenant_id),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    projekte = (
-        db.query(Projekt)
-        .filter(Projekt.tenant_id == tenant_id)
-        .order_by(Projekt.erstellt_am.desc())
-        .all()
-    )
-    return [_projekt_out(p) for p in projekte]
+    q = db.query(Projekt).filter(Projekt.tenant_id == user.tenant_id)
+    if nur_meine:
+        q = q.filter(Projekt.ersteller_id == user.user_id)
+    projekte = q.order_by(Projekt.erstellt_am.desc()).all()
+    return [_projekt_out(p, user) for p in projekte]
 
 
 @router.post("/projekte", response_model=ProjektOut, status_code=201)
 def erstelle_projekt(
     body: ProjektCreate,
     db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_tenant_id),
+    user: CurrentUser = Depends(get_current_user),
 ):
     projekt = Projekt(
-        tenant_id=tenant_id,
+        tenant_id=user.tenant_id,
+        ersteller_id=user.user_id,
         name=body.name, beschreibung=body.beschreibung, kunde=body.kunde,
         leitung=body.leitung or None, auftragswert=body.auftragswert,
         abrechnung_typ=body.abrechnung_typ or None,
@@ -298,16 +312,16 @@ def erstelle_projekt(
     db.add(projekt)
     db.commit()
     db.refresh(projekt)
-    return _projekt_out(projekt)
+    return _projekt_out(projekt, user)
 
 
 @router.get("/projekte/{projekt_id}", response_model=ProjektOut)
 def hole_projekt(
     projekt_id: int,
     db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_tenant_id),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    return _projekt_out(_hole_projekt(db, tenant_id, projekt_id))
+    return _projekt_out(_hole_projekt(db, user.tenant_id, projekt_id), user)
 
 
 @router.patch("/projekte/{projekt_id}", response_model=ProjektOut)
@@ -315,23 +329,27 @@ def aktualisiere_projekt(
     projekt_id: int,
     body: ProjektUpdate,
     db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_tenant_id),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    projekt = _hole_projekt(db, tenant_id, projekt_id)
+    projekt = _hole_projekt(db, user.tenant_id, projekt_id)
+    if not _darf_bearbeiten(projekt, user):
+        raise HTTPException(403, "Keine Berechtigung, dieses Projekt zu bearbeiten.")
     for field, val in body.model_dump(exclude_unset=True).items():
         setattr(projekt, field, val)
     db.commit()
     db.refresh(projekt)
-    return _projekt_out(projekt)
+    return _projekt_out(projekt, user)
 
 
 @router.delete("/projekte/{projekt_id}", status_code=204)
 def loesche_projekt(
     projekt_id: int,
     db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_tenant_id),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    projekt = _hole_projekt(db, tenant_id, projekt_id)
+    projekt = _hole_projekt(db, user.tenant_id, projekt_id)
+    if not _darf_bearbeiten(projekt, user):
+        raise HTTPException(403, "Keine Berechtigung, dieses Projekt zu löschen.")
     db.delete(projekt)
     db.commit()
 
@@ -341,18 +359,20 @@ def setze_projekt_status(
     projekt_id: int,
     body: StatusUpdate,
     db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_tenant_id),
+    user: CurrentUser = Depends(get_current_user),
 ):
     VALID = {"entwurf", "angeboten", "beauftragt", "abgeschlossen", "abgelehnt"}
     if body.status not in VALID:
         raise HTTPException(400, f"Ungültiger Status: {body.status}")
-    p = _hole_projekt(db, tenant_id, projekt_id)
+    p = _hole_projekt(db, user.tenant_id, projekt_id)
+    if not _darf_bearbeiten(p, user):
+        raise HTTPException(403, "Keine Berechtigung, den Status dieses Projekts zu ändern.")
     p.status = body.status
     if body.ablehnungsgrund is not None:
         p.ablehnungsgrund = body.ablehnungsgrund
     db.commit()
     db.refresh(p)
-    return _projekt_out(p)
+    return _projekt_out(p, user)
 
 
 @router.get("/dashboard/stats")
@@ -440,9 +460,12 @@ def erstelle_position(
     projekt_id: int,
     body: PositionCreate,
     db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_tenant_id),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    _hole_projekt(db, tenant_id, projekt_id)
+    tenant_id = user.tenant_id
+    projekt = _hole_projekt(db, tenant_id, projekt_id)
+    if not _darf_bearbeiten(projekt, user):
+        raise HTTPException(403, "Keine Berechtigung, Positionen dieses Projekts zu ändern.")
 
     rolle = None
     if body.rolle_id:
@@ -495,9 +518,11 @@ def trage_ist_stunden_nach(
     position_id: int,
     body: PositionIstUpdate,
     db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_tenant_id),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    pos = _hole_position(db, tenant_id, position_id)
+    pos = _hole_position(db, user.tenant_id, position_id)
+    if not _darf_bearbeiten(pos.projekt, user):
+        raise HTTPException(403, "Keine Berechtigung, dieses Projekt zu bearbeiten.")
     pos.ist_stunden = body.ist_stunden
     db.commit()
     db.refresh(pos)
@@ -510,9 +535,11 @@ def trage_ist_stunden_nach(
 def loesche_position(
     position_id: int,
     db: Session = Depends(get_db),
-    tenant_id: str = Depends(get_tenant_id),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    pos = _hole_position(db, tenant_id, position_id)
+    pos = _hole_position(db, user.tenant_id, position_id)
+    if not _darf_bearbeiten(pos.projekt, user):
+        raise HTTPException(403, "Keine Berechtigung, Positionen dieses Projekts zu ändern.")
     db.delete(pos)
     db.commit()
 
@@ -717,10 +744,13 @@ def vorlage_uebernehmen(
     projekt_id:   int,
     referenz_id:  int,
     db:           Session = Depends(get_db),
-    tenant_id:    str     = Depends(get_tenant_id),
+    user:         CurrentUser = Depends(get_current_user),
 ):
     """Kopiert alle Positionen eines Referenzprojekts in das Zielprojekt."""
-    _hole_projekt(db, tenant_id, projekt_id)
+    tenant_id = user.tenant_id
+    ziel = _hole_projekt(db, tenant_id, projekt_id)
+    if not _darf_bearbeiten(ziel, user):
+        raise HTTPException(403, "Keine Berechtigung, dieses Projekt zu bearbeiten.")
     ref = (
         db.query(Projekt)
         .filter(Projekt.id == referenz_id, Projekt.tenant_id == tenant_id)
@@ -839,3 +869,155 @@ def exportiere_pdf(
         media_type="application/pdf",
         filename=f"Angebot-{angebot.id:04d}.pdf",
     )
+
+
+# ── Aktueller Benutzer & Benutzerverwaltung ───────────────────────────────────
+
+class MeOut(BaseModel):
+    user_id: str
+    email: str | None = None
+    rolle: str
+    tenant_id: str
+    tenant_name: str | None = None
+
+class TenantUserOut(BaseModel):
+    user_id: str
+    email: str | None = None
+    rolle: str
+
+class UserCreate(BaseModel):
+    email: str
+    passwort: str
+    rolle: str = "mitglied"
+
+class UserRolleUpdate(BaseModel):
+    rolle: str
+
+
+_GUELTIGE_ROLLEN = {"admin", "mitglied"}
+
+
+def _require_admin(user: CurrentUser) -> None:
+    if not user.ist_admin:
+        raise HTTPException(403, "Nur Administratoren dürfen Benutzer verwalten.")
+
+
+@router.get("/me", response_model=MeOut)
+def hole_aktuellen_benutzer(
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Kontext des angemeldeten Benutzers (für Rollen-Gating im Frontend)."""
+    tenant = db.get(Tenant, user.tenant_id)
+    return MeOut(
+        user_id=user.user_id,
+        email=user.email,
+        rolle=user.rolle,
+        tenant_id=user.tenant_id,
+        tenant_name=tenant.name if tenant else None,
+    )
+
+
+@router.get("/users", response_model=list[TenantUserOut])
+def liste_benutzer(
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    _require_admin(user)
+    return (
+        db.query(TenantUser)
+        .filter(TenantUser.tenant_id == user.tenant_id)
+        .order_by(TenantUser.email)
+        .all()
+    )
+
+
+@router.post("/users", response_model=TenantUserOut, status_code=201)
+def erstelle_benutzer(
+    body: UserCreate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    _require_admin(user)
+    if body.rolle not in _GUELTIGE_ROLLEN:
+        raise HTTPException(400, f"Ungültige Rolle: {body.rolle}")
+
+    vorhanden = (
+        db.query(TenantUser)
+        .filter(TenantUser.tenant_id == user.tenant_id, TenantUser.email == body.email)
+        .first()
+    )
+    if vorhanden:
+        raise HTTPException(409, f"Ein Benutzer mit E-Mail '{body.email}' existiert bereits.")
+
+    from estimateiq.angebot import supabase_admin
+    try:
+        neue_user_id = supabase_admin.create_auth_user(body.email, body.passwort)
+    except supabase_admin.AdminNichtKonfiguriert as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f"Benutzer konnte in Supabase nicht angelegt werden: {exc}")
+
+    tu = TenantUser(
+        user_id=neue_user_id,
+        tenant_id=user.tenant_id,
+        email=body.email,
+        rolle=body.rolle,
+    )
+    db.add(tu)
+    db.commit()
+    return TenantUserOut(user_id=tu.user_id, email=tu.email, rolle=tu.rolle)
+
+
+@router.patch("/users/{user_id}", response_model=TenantUserOut)
+def aendere_benutzerrolle(
+    user_id: str,
+    body: UserRolleUpdate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    _require_admin(user)
+    if body.rolle not in _GUELTIGE_ROLLEN:
+        raise HTTPException(400, f"Ungültige Rolle: {body.rolle}")
+    if user_id == user.user_id:
+        raise HTTPException(400, "Die eigene Rolle kann nicht geändert werden.")
+
+    tu = (
+        db.query(TenantUser)
+        .filter(TenantUser.user_id == user_id, TenantUser.tenant_id == user.tenant_id)
+        .first()
+    )
+    if not tu:
+        raise HTTPException(404, "Benutzer nicht gefunden.")
+    tu.rolle = body.rolle
+    db.commit()
+    return TenantUserOut(user_id=tu.user_id, email=tu.email, rolle=tu.rolle)
+
+
+@router.delete("/users/{user_id}", status_code=204)
+def loesche_benutzer(
+    user_id: str,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    _require_admin(user)
+    if user_id == user.user_id:
+        raise HTTPException(400, "Der eigene Zugang kann nicht gelöscht werden.")
+
+    tu = (
+        db.query(TenantUser)
+        .filter(TenantUser.user_id == user_id, TenantUser.tenant_id == user.tenant_id)
+        .first()
+    )
+    if not tu:
+        raise HTTPException(404, "Benutzer nicht gefunden.")
+
+    # Auth-User in Supabase entfernen (Best effort), dann Zuordnung löschen.
+    from estimateiq.angebot import supabase_admin
+    try:
+        supabase_admin.delete_auth_user(user_id)
+    except Exception as exc:
+        logger.warning("Auth-User %s konnte nicht gelöscht werden: %s", user_id, exc)
+
+    db.delete(tu)
+    db.commit()

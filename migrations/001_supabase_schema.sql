@@ -25,7 +25,8 @@ create table if not exists tenants (
 create table if not exists tenant_users (
     user_id   text primary key,
     tenant_id text not null references tenants(id) on delete cascade,
-    email     text
+    email     text,
+    rolle     text not null default 'mitglied'   -- 'admin' | 'mitglied'
 );
 create index if not exists ix_tenant_users_tenant on tenant_users(tenant_id);
 
@@ -52,6 +53,7 @@ create table if not exists projekte (
     kunde           varchar(200) not null default '',
     status          varchar(50) not null default 'entwurf',
     ist_referenz    boolean not null default false,
+    ersteller_id    text,          -- Supabase user_id; NULL = firmenweit / kein Owner
     embedding       vector(384),
     ablehnungsgrund text,
     leitung         varchar(200),
@@ -62,6 +64,7 @@ create table if not exists projekte (
     erstellt_am     timestamptz not null default now()
 );
 create index if not exists ix_projekte_tenant on projekte(tenant_id);
+create index if not exists ix_projekte_ersteller on projekte(ersteller_id);
 
 -- ── Leistungspositionen ──────────────────────────────────────────────────────
 

@@ -53,6 +53,8 @@ class TenantUser(Base):
         String(36), ForeignKey("tenants.id"), nullable=False, index=True
     )
     email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Rolle innerhalb des Tenants: 'admin' (Vollzugriff) oder 'mitglied'
+    rolle: Mapped[str] = mapped_column(String(20), nullable=False, default="mitglied")
 
 
 class Rolle(Base):
@@ -100,6 +102,8 @@ class Projekt(Base, _EmbeddingMixin):
     kunde: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(50), default="entwurf")
     ist_referenz: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Ersteller (Supabase user_id). NULL = firmenweit / kein Owner (nur Admin editierbar).
+    ersteller_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     embedding = mapped_column(_EMBEDDING_COL, _EMBEDDING_TYPE, nullable=True)
     ablehnungsgrund: Mapped[str | None] = mapped_column(Text, nullable=True)
     leitung: Mapped[str | None] = mapped_column(String(200), nullable=True)

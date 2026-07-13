@@ -14,6 +14,7 @@ Modi (siehe config.py):
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import jwt
 from fastapi import Depends, Header, HTTPException
@@ -26,9 +27,6 @@ from estimateiq.angebot.models import TenantUser
 logger = logging.getLogger(__name__)
 
 _jwks_client: "jwt.PyJWKClient | None" = None
-
-# user_id → tenant_id (die Zuordnung ändert sich praktisch nie)
-_tenant_cache: dict[str, str] = {}
 
 
 def _decode_token(token: str) -> dict:
@@ -59,12 +57,34 @@ def _decode_token(token: str) -> dict:
     )
 
 
-def get_tenant_id(
+@dataclass
+class CurrentUser:
+    """Aufgelöster Request-Kontext: Wer stellt die Anfrage, in welchem Tenant, mit welcher Rolle."""
+    user_id: str
+    tenant_id: str
+    rolle: str          # 'admin' | 'mitglied'
+    email: str | None = None
+
+    @property
+    def ist_admin(self) -> bool:
+        return self.rolle == "admin"
+
+
+# Fester Kontext für die lokale Entwicklung ohne Login (immer Admin).
+_DEV_USER_ID = "dev-user"
+
+
+def get_current_user(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
-) -> str:
+) -> CurrentUser:
     if config.AUTH_DISABLED:
-        return config.DEV_TENANT_ID
+        return CurrentUser(
+            user_id=_DEV_USER_ID,
+            tenant_id=config.DEV_TENANT_ID,
+            rolle="admin",
+            email="dev@local",
+        )
 
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Nicht angemeldet (Authorization-Header fehlt).")
@@ -84,14 +104,22 @@ def get_tenant_id(
     if not user_id:
         raise HTTPException(401, "Token enthält keine Benutzer-ID (sub).")
 
-    if user_id in _tenant_cache:
-        return _tenant_cache[user_id]
-
+    # Zuordnung wird pro Request frisch gelesen (Rollen können sich ändern);
+    # ein PK-Lookup ist günstig.
     zuordnung = db.get(TenantUser, user_id)
     if zuordnung is None:
         raise HTTPException(
             403, "Benutzer ist keinem Tenant zugeordnet. Bitte Administrator kontaktieren."
         )
 
-    _tenant_cache[user_id] = zuordnung.tenant_id
-    return zuordnung.tenant_id
+    return CurrentUser(
+        user_id=user_id,
+        tenant_id=zuordnung.tenant_id,
+        rolle=zuordnung.rolle or "mitglied",
+        email=zuordnung.email or payload.get("email"),
+    )
+
+
+def get_tenant_id(current: CurrentUser = Depends(get_current_user)) -> str:
+    """Rückwärtskompatibel: liefert nur die tenant_id des aktuellen Users."""
+    return current.tenant_id
