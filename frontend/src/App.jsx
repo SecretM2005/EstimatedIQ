@@ -9,10 +9,11 @@ import Projekte         from './pages/Projekte'
 import ProjektDetail    from './pages/ProjektDetail'
 import Nachkalkulation  from './pages/Nachkalkulation'
 import Rollen           from './pages/Rollen'
+import Benutzer         from './pages/Benutzer'
 import HistorischImport from './pages/HistorischImport'
 
 export default function App() {
-  const { session, loading } = useAuth()
+  const { session, loading, me } = useAuth()
 
   // Login nur, wenn Supabase konfiguriert ist (sonst lokale Entwicklung ohne Auth)
   if (supabase) {
@@ -38,6 +39,7 @@ export default function App() {
           <Route path="/projekte/:id"                  element={<ProjektDetail />} />
           <Route path="/projekte/:id/nachkalkulation"  element={<Nachkalkulation />} />
           <Route path="/rollen"                        element={<Rollen />} />
+          <Route path="/benutzer"                      element={me?.rolle === 'admin' ? <Benutzer /> : <Navigate to="/" replace />} />
           <Route path="/historisch"                    element={<HistorischImport />} />
           <Route path="*"                              element={<Navigate to="/" replace />} />
         </Routes>

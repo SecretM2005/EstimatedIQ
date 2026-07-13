@@ -34,9 +34,10 @@ function NavItem({ to, icon, label, badge, end }) {
 }
 
 export default function Sidebar() {
-  const { user, signOut } = useAuth()
-  const email    = user?.email
+  const { user, me, signOut } = useAuth()
+  const email    = me?.email || user?.email
   const initiale = email ? email.slice(0, 2).toUpperCase() : 'EI'
+  const istAdmin = me?.rolle === 'admin'
 
   return (
     <aside className="w-[250px] flex-none bg-white border-r border-slate-200 flex flex-col h-full overflow-hidden">
@@ -104,6 +105,20 @@ export default function Sidebar() {
             </svg>
           }
         />
+
+        {istAdmin && (
+          <NavItem
+            to="/benutzer"
+            label="Benutzer"
+            icon={
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="flex-none">
+                <circle cx="9" cy="8" r="3.2" stroke="currentColor" strokeWidth="1.9"/>
+                <path d="M3.5 19a5.5 5.5 0 0 1 11 0" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"/>
+                <path d="M16.5 6.2a3 3 0 0 1 0 5.6M18 19a5.5 5.5 0 0 0-2.5-4.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"/>
+              </svg>
+            }
+          />
+        )}
 
         <div className="text-[10px] font-bold tracking-[0.06em] uppercase text-slate-400 px-3 pt-4 pb-1.5">
           Import

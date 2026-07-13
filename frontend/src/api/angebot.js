@@ -23,8 +23,15 @@ export const createRolle      = (body)     => api.post('/rollen', body).then(r =
 export const updateRolle      = (id, body) => api.put(`/rollen/${id}`, body).then(r => r.data)
 export const deleteRolle      = (id)       => api.delete(`/rollen/${id}`)
 
+// Benutzer / Konto
+export const getMe            = ()             => api.get('/me').then(r => r.data)
+export const getUsers         = ()             => api.get('/users').then(r => r.data)
+export const createUser       = (body)         => api.post('/users', body).then(r => r.data)
+export const updateUserRole   = (id, rolle)    => api.patch(`/users/${id}`, { rolle }).then(r => r.data)
+export const deleteUser       = (id)           => api.delete(`/users/${id}`)
+
 // Projekte
-export const getProjekte      = ()         => api.get('/projekte').then(r => r.data)
+export const getProjekte      = (nurMeine)  => api.get('/projekte', { params: nurMeine ? { nur_meine: true } : undefined }).then(r => r.data)
 export const createProjekt    = (body)     => api.post('/projekte', body).then(r => r.data)
 export const getProjekt       = (id)       => api.get(`/projekte/${id}`).then(r => r.data)
 export const updateProjekt    = (id, body) => api.patch(`/projekte/${id}`, body).then(r => r.data)

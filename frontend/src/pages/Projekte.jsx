@@ -214,18 +214,19 @@ export default function Projekte() {
   const [filterKunde,   setFilterKunde]   = useState('alle')
   const [filterLeitung, setFilterLeitung] = useState('alle')
   const [filterJahr,    setFilterJahr]    = useState('alle')
+  const [nurMeine,      setNurMeine]      = useState(false)
   const [page,          setPage]          = useState(1)
   const [showModal,     setShowModal]     = useState(false)
   const navigate = useNavigate()
 
   const load = () =>
-    getProjekte()
+    getProjekte(nurMeine)
       .then(ps => setProjekte(
         ps.filter(p => p.name !== '__historisch__' && !p.ist_referenz && ['beauftragt', 'abgeschlossen'].includes(p.status))
       ))
       .finally(() => setLoading(false))
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { setLoading(true); load() }, [nurMeine])
 
   const kunden    = [...new Set(projekte.map(p => p.kunde).filter(Boolean))].sort()
   const leitungen = [...new Set(projekte.map(p => p.leitung).filter(Boolean))].sort()
@@ -312,6 +313,24 @@ export default function Projekte() {
         <Dropdown prefix="GJ" value={filterJahr} onChange={v => { setFilterJahr(v); setPage(1) }}
           options={[['alle','Alle'], ...jahre.map(y => [String(y), `GJ ${y}`])]} />
 
+        {/* Nur eigene Projekte */}
+        <button
+          type="button"
+          onClick={() => { setNurMeine(v => !v); setPage(1) }}
+          aria-pressed={nurMeine}
+          className={`h-9 px-3 rounded-lg text-[12.5px] font-medium transition-colors inline-flex items-center gap-1.5 border ${
+            nurMeine
+              ? 'bg-accent/10 border-accent/30 text-accent'
+              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="8" r="3.4" stroke="currentColor" strokeWidth="2"/>
+            <path d="M5.5 20a6.5 6.5 0 0 1 13 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+          Nur meine
+        </button>
+
         <div className="ml-auto">
           <button className="h-9 px-3 bg-white border border-slate-200 rounded-lg text-[12.5px] font-medium text-slate-500 hover:bg-slate-50 transition-colors inline-flex items-center gap-1.5">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
@@ -395,11 +414,13 @@ export default function Projekte() {
 
               {/* Chevron / delete */}
               <div className="flex items-center justify-end">
-                <button
-                  onClick={e => handleDelete(e, p.id)}
-                  className="opacity-0 group-hover:opacity-100 text-[11px] text-red-400 hover:text-red-600 px-1 py-1 mr-1 transition-opacity"
-                  title="Löschen"
-                >✕</button>
+                {p.darf_bearbeiten !== false && (
+                  <button
+                    onClick={e => handleDelete(e, p.id)}
+                    className="opacity-0 group-hover:opacity-100 text-[11px] text-red-400 hover:text-red-600 px-1 py-1 mr-1 transition-opacity"
+                    title="Löschen"
+                  >✕</button>
+                )}
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                   className="text-slate-300 group-hover:text-slate-400 transition-colors flex-none">
                   <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>

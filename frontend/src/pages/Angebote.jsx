@@ -77,6 +77,7 @@ export default function Angebote() {
   const [loading,   setLoading]   = useState(true)
   const [tab,       setTab]       = useState('alle')
   const [search,    setSearch]    = useState('')
+  const [nurMeine,  setNurMeine]  = useState(false)
   const [showForm,  setShowForm]  = useState(false)
   const [name,      setName]      = useState('')
   const [beschreibung, setBeschreibung] = useState('')
@@ -87,11 +88,11 @@ export default function Angebote() {
   const navigate = useNavigate()
 
   const load = () =>
-    getProjekte()
+    getProjekte(nurMeine)
       .then(ps => setAlle(ps.filter(p => p.name !== '__historisch__' && !p.ist_referenz)))
       .finally(() => setLoading(false))
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { setLoading(true); load() }, [nurMeine])
 
   const angebote = alle.filter(p => ['entwurf', 'angeboten', 'abgelehnt'].includes(p.status))
 
@@ -225,6 +226,24 @@ export default function Angebote() {
             className="flex-1 text-[13px] bg-transparent outline-none text-slate-900 placeholder:text-slate-400"
           />
         </div>
+
+        {/* Nur eigene Angebote */}
+        <button
+          type="button"
+          onClick={() => setNurMeine(v => !v)}
+          aria-pressed={nurMeine}
+          className={`h-9 px-3 rounded-lg text-[12.5px] font-medium transition-colors inline-flex items-center gap-1.5 border ${
+            nurMeine
+              ? 'bg-accent/10 border-accent/30 text-accent'
+              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="8" r="3.4" stroke="currentColor" strokeWidth="2"/>
+            <path d="M5.5 20a6.5 6.5 0 0 1 13 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+          Nur meine
+        </button>
       </div>
 
       {/* Table */}
@@ -282,14 +301,14 @@ export default function Angebote() {
 
               {/* Actions */}
               <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
-                {p.status === 'entwurf' && (
+                {p.darf_bearbeiten !== false && p.status === 'entwurf' && (
                   <button
                     onClick={() => handleStatus(p.id, 'angeboten')}
                     disabled={actionId === p.id}
                     className="h-7 px-2.5 bg-indigo-50 hover:bg-indigo-100 text-accent text-[11.5px] font-semibold rounded-lg border border-indigo-100 transition-colors disabled:opacity-50 whitespace-nowrap"
                   >Versenden →</button>
                 )}
-                {p.status === 'angeboten' && (
+                {p.darf_bearbeiten !== false && p.status === 'angeboten' && (
                   <>
                     <button
                       onClick={() => handleStatus(p.id, 'beauftragt')}
@@ -303,7 +322,7 @@ export default function Angebote() {
                     >Ablehnen</button>
                   </>
                 )}
-                {p.status === 'abgelehnt' && (
+                {p.darf_bearbeiten !== false && p.status === 'abgelehnt' && (
                   <button
                     onClick={() => handleStatus(p.id, 'entwurf')}
                     disabled={actionId === p.id}
@@ -314,11 +333,13 @@ export default function Angebote() {
 
               {/* Chevron + delete */}
               <div className="flex items-center justify-end gap-1" onClick={e => e.stopPropagation()}>
-                <button
-                  onClick={e => { e.stopPropagation(); handleDelete(p.id) }}
-                  className="opacity-0 group-hover:opacity-100 text-[11px] text-red-400 hover:text-red-600 px-1 py-1 transition-opacity"
-                  title="Löschen"
-                >✕</button>
+                {p.darf_bearbeiten !== false && (
+                  <button
+                    onClick={e => { e.stopPropagation(); handleDelete(p.id) }}
+                    className="opacity-0 group-hover:opacity-100 text-[11px] text-red-400 hover:text-red-600 px-1 py-1 transition-opacity"
+                    title="Löschen"
+                  >✕</button>
+                )}
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                   className="text-slate-300 group-hover:text-slate-400 transition-colors flex-none">
                   <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
