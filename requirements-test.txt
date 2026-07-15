@@ -1,0 +1,15 @@
+# Minimale Abhängigkeiten NUR zum Ausführen der Backend-Tests (CI).
+# Bewusst ohne torch/sentence-transformers/pgvector/psycopg2: die Tests nutzen
+# ephemere SQLite und mocken die Embeddings – das hält CI schnell (~30s statt Minuten).
+fastapi==0.115.5
+pydantic==2.9.2
+sqlalchemy==2.0.36
+numpy==1.26.4
+pandas==2.2.3
+reportlab==4.2.5
+python-multipart
+openpyxl
+PyJWT[crypto]==2.10.1
+python-dotenv==1.0.1
+httpx==0.27.2
+pytest==8.3.4
