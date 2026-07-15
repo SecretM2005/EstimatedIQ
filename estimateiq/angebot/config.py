@@ -27,7 +27,9 @@ _PROJEKT_ROOT = Path(__file__).resolve().parents[2]
 DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
 IS_POSTGRES: bool = DATABASE_URL.startswith(("postgres://", "postgresql://", "postgresql+"))
 
-SQLITE_PATH: Path = _PROJEKT_ROOT / "data" / "estimateiq_angebot.db"
+# SQLITE_PATH kann per Env überschrieben werden (z. B. für Tests → temporäre DB).
+_sqlite_env = os.getenv("SQLITE_PATH", "").strip()
+SQLITE_PATH: Path = Path(_sqlite_env) if _sqlite_env else _PROJEKT_ROOT / "data" / "estimateiq_angebot.db"
 
 # ── Supabase Auth ─────────────────────────────────────────────────────────────
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
