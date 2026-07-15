@@ -15,3 +15,5 @@ include = ["estimateiq*"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-q"
+# Repo-Root auf den Import-Pfad legen, damit `pytest` (ohne `-m`) `estimateiq` findet.
+pythonpath = ["."]
