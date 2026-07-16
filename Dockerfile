@@ -1,27 +1,36 @@
 # EstimateIQ Backend – FastAPI + sentence-transformers
-# Für Railway oder Render (baut direkt aus diesem Dockerfile).
+# Läuft auf Hugging Face Spaces (SDK: docker), ebenso auf Railway/Render.
+# HF führt den Container als Nutzer mit UID 1000 aus – daher non-root + HF_HOME
+# an einem für diesen Nutzer les-/schreibbaren Ort.
 
 FROM python:3.11-slim
 
-ENV PYTHONUNBUFFERED=1 \
+# Nutzer 1000 anlegen (HF-Konvention)
+RUN useradd -m -u 1000 user
+
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/home/user/.cache/huggingface \
     HF_HUB_DISABLE_TELEMETRY=1
 
-WORKDIR /app
+USER user
+WORKDIR /home/user/app
 
 # Abhängigkeiten zuerst (bessere Layer-Caches)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --chown=user requirements.txt .
+RUN pip install --user --no-cache-dir -r requirements.txt
 
-# Embedding-Modell schon ins Image laden → schneller, netzunabhängiger Start
+# Embedding-Modell ins Image laden → schneller, netzunabhängiger Start
 RUN python -c "from sentence_transformers import SentenceTransformer; \
     SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
 
 # Anwendungscode
-COPY estimateiq ./estimateiq
-COPY migrations ./migrations
+COPY --chown=user estimateiq ./estimateiq
+COPY --chown=user migrations ./migrations
 
-# Plattformen (Railway/Render) geben den Port über $PORT vor.
+# Port: HF nutzt app_port (README) = 8000; Railway/Render setzen $PORT.
 ENV PORT=8000
 EXPOSE 8000
 
