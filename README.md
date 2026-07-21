@@ -1,106 +1,69 @@
+---
+title: EstimateIQ API
+emoji: 📊
+colorFrom: indigo
+colorTo: blue
+sdk: docker
+app_port: 8000
+pinned: false
+---
+
 # EstimateIQ
 
-ML-Tool zur Projektkostenschätzung für IT-Dienstleister im DACH-Raum,
-basierend auf öffentlichen EU-Ausschreibungen (TED Europa).
+B2B-SaaS-Tool zur Angebots- und Projektkalkulation für IT-Dienstleister und
+Agenturen im DACH-Raum. Kern ist eine embedding-basierte Ähnlichkeitssuche:
+aus historischen Projektpositionen werden für neue Angebote Aufwandsschätzungen
+und Referenzvorlagen vorgeschlagen.
 
-## Voraussetzungen
+> Dieses Repository enthält das **Backend** (FastAPI). Bei einem Hugging-Face-Space
+> wird daraus über das `Dockerfile` die API gebaut. Das Frontend (`frontend/`,
+> React/Vite) wird separat deployt (z. B. Vercel).
 
-- Python 3.11+
-- 4 GB RAM (BERT-Modell)
-- Optional: CUDA-GPU für schnellere Embedding-Extraktion
+## Architektur
 
-## Installation
+```
+Frontend (Vercel)  ──HTTPS──▶  Backend-API (dieses Repo)  ──▶  Supabase (Postgres + pgvector, Auth)
+```
+
+- Python 3.11, FastAPI + SQLAlchemy 2.0, Pydantic v2
+- Supabase (Postgres + pgvector) in Produktion, SQLite als lokaler Fallback
+- Supabase Auth (JWT), strikte Multi-Tenancy (jede Query auf `tenant_id` gefiltert)
+- sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`, 384 Dims, nur Inferenz)
+- reportlab (Angebots-PDF)
+
+## Lokal starten
 
 ```bash
-# Repository klonen
-git clone https://github.com/dein-user/estimateiq.git
-cd estimateiq
-
-# Virtuelle Umgebung anlegen
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-
-# Abhängigkeiten installieren
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+AUTH_DISABLED=true uvicorn estimateiq.api.main:app --port 8000
+# Frontend:
+cd frontend && npm install && npm run dev
 ```
 
-## Konfiguration
+Health-Check: `GET /health`. Endpunkte unter `/api/v2/*`. Swagger: `/docs`.
 
-Lege eine `.env`-Datei im Projektroot an:
+## Umgebungsvariablen (Supabase-Betrieb)
 
-```env
-SUPABASE_URL=https://xxxx.supabase.co
-SUPABASE_KEY=your-anon-key
-```
+| Variable | Zweck |
+|---|---|
+| `DATABASE_URL` | Supabase-Postgres (Session-Pooler) |
+| `SUPABASE_URL` | Projekt-URL (JWT-Verifikation) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Benutzerverwaltung/Seed |
+| `SUPABASE_JWT_SECRET` | nur falls JWKS-Verifikation nicht greift |
+| `AUTH_DISABLED` | `false` in Produktion |
+| `CORS_ORIGINS` | Frontend-Origin(s), Standard `*` |
 
-## Daten laden & vorverarbeiten
+## Tests
 
 ```bash
-# Schritt 1: TED-Ausschreibungen laden (DACH, 2024, max. 10 Seiten zum Test)
-python -m estimateiq.data.fetch_ted
-
-# Schritt 2: Bereinigen und als Parquet speichern
-python -m estimateiq.data.preprocess
+pip install -r requirements-test.txt && pytest    # Backend (14 Tests)
+cd frontend && npm install && npm test            # Frontend (Vitest)
 ```
 
-## API starten
+## Deployment
 
-```bash
-uvicorn estimateiq.api.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
-
-## API-Beispiel
-
-```bash
-curl -X POST http://localhost:8000/api/estimate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Entwicklung eines ERP-Systems für Bundesbehörde",
-    "description": "Gegenstand der Ausschreibung ist die Entwicklung, Implementierung und Wartung eines webbasierten ERP-Systems...",
-    "cpv_code": 72263000,
-    "country": "DE",
-    "duration_days": 365
-  }'
-```
-
-Beispielantwort:
-
-```json
-{
-  "estimated_cost_eur": 485000.00,
-  "cost_range_low_eur": 388000.00,
-  "cost_range_high_eur": 654750.00,
-  "risk": {
-    "risk_class": 1,
-    "risk_label": "mittel",
-    "probability_low": 0.22,
-    "probability_medium": 0.61,
-    "probability_high": 0.17
-  },
-  "cpv_category": "software",
-  "model_version": "1.0.0"
-}
-```
-
-## Projektstruktur
-
-```
-estimateiq/
-├── data/
-│   ├── fetch_ted.py       TED Europa API Connector
-│   └── preprocess.py      Datenbereinigung & Feature Engineering
-├── models/
-│   ├── bert_extractor.py  BERT Embeddings (bert-base-german-cased)
-│   ├── cost_model.py      XGBoost Kostenvorhersage
-│   └── risk_model.py      Random Forest Risikoklassifikation
-├── api/
-│   └── main.py            FastAPI Endpunkte
-├── requirements.txt
-├── CLAUDE.md              Projektbeschreibung für Claude Code
-└── README.md
-```
+Siehe `DEPLOYMENT.md`. Demo-Daten via `python -m estimateiq.angebot.seed`.
 
 ## Lizenz
 

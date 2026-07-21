@@ -10,3 +10,10 @@ requires-python = ">=3.11"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["estimateiq*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
+# Repo-Root auf den Import-Pfad legen, damit `pytest` (ohne `-m`) `estimateiq` findet.
+pythonpath = ["."]

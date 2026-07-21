@@ -1,0 +1,29 @@
+# Frontend wird separat deployt (Vercel/Netlify)
+frontend/
+
+# Laufzeit-Artefakte / lokale DB
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Python-Cache & Umgebungen
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Geheimnisse / lokale Konfiguration
+.env
+.env.local
+
+# Git & Tooling
+.git/
+.gitignore
+.claude/
+*.md
+!requirements.txt
+
+# Node (falls versehentlich vorhanden)
+node_modules/
