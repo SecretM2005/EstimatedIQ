@@ -23,12 +23,27 @@ export const createRolle      = (body)     => api.post('/rollen', body).then(r =
 export const updateRolle      = (id, body) => api.put(`/rollen/${id}`, body).then(r => r.data)
 export const deleteRolle      = (id)       => api.delete(`/rollen/${id}`)
 
-// Benutzer / Konto
+// Konto
 export const getMe            = ()             => api.get('/me').then(r => r.data)
-export const getUsers         = ()             => api.get('/users').then(r => r.data)
-export const createUser       = (body)         => api.post('/users', body).then(r => r.data)
-export const updateUserRole   = (id, rolle)    => api.patch(`/users/${id}`, { rolle }).then(r => r.data)
-export const deleteUser       = (id)           => api.delete(`/users/${id}`)
+
+// Team (Mitgliederverwaltung)
+export const getTeam                 = ()               => api.get('/team').then(r => r.data)
+export const createTeamMember        = (body)           => api.post('/team', body).then(r => r.data)
+export const updateTeamMemberRolle   = (userId, teamrolleId) =>
+  api.patch(`/team/${userId}`, { teamrolle_id: teamrolleId }).then(r => r.data)
+export const removeTeamMember        = (userId)          => api.delete(`/team/${userId}`)
+
+// Teamrollen (RBAC)
+export const getTeamrollen    = ()         => api.get('/teamrollen').then(r => r.data)
+export const createTeamrolle  = (body)     => api.post('/teamrollen', body).then(r => r.data)
+export const updateTeamrolle  = (id, body) => api.patch(`/teamrollen/${id}`, body).then(r => r.data)
+export const deleteTeamrolle  = (id)       => api.delete(`/teamrollen/${id}`)
+
+// Permissions-Katalog
+export const getPermissions   = ()         => api.get('/permissions').then(r => r.data)
+
+// Audit-Log
+export const getAuditLog      = (limit = 100) => api.get('/audit-log', { params: { limit } }).then(r => r.data)
 
 // Projekte
 export const getProjekte      = (nurMeine)  => api.get('/projekte', { params: nurMeine ? { nur_meine: true } : undefined }).then(r => r.data)

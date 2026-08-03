@@ -37,7 +37,7 @@ export default function Sidebar() {
   const { user, me, signOut } = useAuth()
   const email    = me?.email || user?.email
   const initiale = email ? email.slice(0, 2).toUpperCase() : 'EI'
-  const istAdmin = me?.rolle === 'admin'
+  const kannTeamVerwalten = me?.permissions?.includes('settings.manage_users')
 
   return (
     <aside className="w-[250px] flex-none bg-white border-r border-slate-200 flex flex-col h-full overflow-hidden">
@@ -106,10 +106,10 @@ export default function Sidebar() {
           }
         />
 
-        {istAdmin && (
+        {kannTeamVerwalten && (
           <NavItem
-            to="/benutzer"
-            label="Benutzer"
+            to="/team"
+            label="Team & Rollen"
             icon={
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="flex-none">
                 <circle cx="9" cy="8" r="3.2" stroke="currentColor" strokeWidth="1.9"/>
