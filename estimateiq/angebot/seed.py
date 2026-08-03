@@ -22,7 +22,7 @@ from __future__ import annotations
 import sys
 
 from estimateiq.angebot import config
-from estimateiq.angebot.database import SessionLocal, init_db
+from estimateiq.angebot.database import SessionLocal, init_db, ensure_systemrollen
 from estimateiq.angebot.models import (
     Angebot, Leistungsposition, Projekt, Rolle, Tenant, TenantUser,
 )
@@ -280,18 +280,22 @@ def _seed_login_user(tenant_id: str) -> str | None:
     if not user_id:
         return None
 
-    # Zuordnung in tenant_users (eigene DB-Session, get-or-create)
+    # Zuordnung in tenant_users (eigene DB-Session, get-or-create).
+    # Owner-Teamrolle muss existieren, bevor ein Benutzer zugeordnet werden
+    # kann (teamrolle_id ist NOT NULL) – ensure_systemrollen ist idempotent.
     db = SessionLocal()
     try:
+        rollen = ensure_systemrollen(db, tenant_id)
+        owner_id = rollen["Owner"]
         tu = db.get(TenantUser, user_id)
         if tu is None:
             db.add(TenantUser(
-                user_id=user_id, tenant_id=tenant_id,
-                email=DEMO_LOGIN_EMAIL, rolle="admin",
+                user_id=user_id, tenant_id=tenant_id, email=DEMO_LOGIN_EMAIL,
+                teamrolle_id=owner_id, status="aktiv",
             ))
         else:
             tu.tenant_id = tenant_id
-            tu.rolle = "admin"
+            tu.teamrolle_id = owner_id
         db.commit()
     finally:
         db.close()
@@ -316,6 +320,11 @@ def seed(reset: bool = False) -> None:
         if reset:
             _loesche_tenant_daten(db, tenant.id)
             print(f"[Reset] Bestehende Daten von Tenant '{tenant.name}' gelöscht.")
+
+        # Systemrollen (Owner/Admin/Mitarbeiter/Nur-Lesen) müssen existieren,
+        # bevor ein Benutzer zugeordnet werden kann (teamrolle_id ist NOT NULL).
+        # Unabhängig von der automatischen Login-User-Anlage weiter unten.
+        teamrollen_map = ensure_systemrollen(db, tenant.id)
 
         rollen_map = _seed_rollen(db, tenant.id)
         angelegt = _seed_projekte(db, tenant.id, rollen_map, embed, embed_batch)
@@ -352,13 +361,14 @@ def seed(reset: bool = False) -> None:
             print(f"  E-Mail:   {DEMO_LOGIN_EMAIL}")
             print(f"  Passwort: {DEMO_LOGIN_PASSWORT}")
         else:
+            owner_id = teamrollen_map["Owner"]
             print("Login-User bitte manuell anlegen:")
             print(f"  1. Supabase → Authentication → Users → 'Add user' → 'Create new user'")
             print(f"     E-Mail: {DEMO_LOGIN_EMAIL}, Passwort: {DEMO_LOGIN_PASSWORT}, 'Auto Confirm User' anhaken")
             print("  2. Benutzer-UID kopieren und im SQL Editor ausführen:")
-            print("     insert into tenant_users (user_id, tenant_id, email, rolle)")
-            print(f"     values ('<USER-UID>', '{tenant.id}', '{DEMO_LOGIN_EMAIL}', 'admin')")
-            print("     on conflict (user_id) do update set tenant_id = excluded.tenant_id, rolle = 'admin';")
+            print("     insert into tenant_users (user_id, tenant_id, email, teamrolle_id)")
+            print(f"     values ('<USER-UID>', '{tenant.id}', '{DEMO_LOGIN_EMAIL}', {owner_id})")
+            print("     on conflict (user_id) do update set tenant_id = excluded.tenant_id, teamrolle_id = excluded.teamrolle_id;")
     print("─" * 60)
 
 

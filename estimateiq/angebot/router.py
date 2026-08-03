@@ -171,6 +171,11 @@ def _ist_sichtbar(projekt: Projekt, user: CurrentUser) -> bool:
     """
     Lese-Sichtbarkeit: mit projekte.alle_ansehen alles; sonst eigene Projekte
     plus firmenweite (ersteller_id=NULL, z. B. importierte Referenzdaten).
+
+    ACHTUNG bei Änderungen: liste_projekte() und dashboard_stats() bilden
+    dieselbe Regel zusätzlich als SQL-WHERE-Bedingung ab (kann nicht über
+    diese Funktion laufen, da sie auf einem bereits geladenen Objekt arbeitet,
+    nicht auf der Query) – bei einer Regeländerung hier IMMER auch dort prüfen.
     """
     if user.hat_permission("projekte.alle_ansehen"):
         return True
