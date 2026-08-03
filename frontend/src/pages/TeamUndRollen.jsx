@@ -285,7 +285,7 @@ export default function TeamUndRollen() {
   }
 
   const adminCount = teamrollen
-    .filter(r => r.name === 'Owner' || r.name === 'Admin')
+    .filter(r => r.permissions.includes('settings.manage_users'))
     .reduce((n, r) => n + team.filter(m => m.teamrolle_id === r.id).length, 0)
 
   const TEAM_COL   = '1fr 200px 100px 90px'
