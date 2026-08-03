@@ -1,12 +1,21 @@
 """
-Tenant-Auflösung aus dem Supabase-JWT.
+Tenant-Auflösung + Rechteprüfung aus dem Supabase-JWT.
 
-Jeder Request an /api/v2 muss einen Tenant ergeben – die Dependency
-get_tenant_id() ist die EINZIGE Quelle dafür und wird von jedem
-Endpunkt verwendet. Ohne gültigen Tenant gibt es keine Daten.
+Jeder Request an /api/v2 muss einen Tenant ergeben – get_current_user() ist
+die EINZIGE Quelle dafür und wird von jedem Endpunkt verwendet. Ohne gültigen
+Tenant gibt es keine Daten.
+
+Zwei Berechtigungsebenen (siehe permissions.py für den Katalog):
+  1. Permissions (require_permission): "darf dieser User diese Art von
+     Aktion überhaupt durchführen" – global pro Endpunkt geprüft.
+  2. Ownership (_darf_bearbeiten in router.py): "darf er dieses KONKRETE
+     Objekt bearbeiten" – bleibt bestehen, orthogonal zu Permissions.
+     projekte.alle_ansehen hebt die Ownership-Einschränkung sowohl beim
+     Lesen als auch beim Schreiben auf (einheitliche Quelle der Wahrheit,
+     statt eines separaten "alle bearbeiten"-Keys).
 
 Modi (siehe config.py):
-  1. AUTH_DISABLED=true      → fester Dev-Tenant (nur lokale Entwicklung!)
+  1. AUTH_DISABLED=true      → fester Dev-Tenant, Rolle "Owner" (alle Rechte)
   2. SUPABASE_JWT_SECRET     → HS256-Verifikation (Legacy Shared Secret)
   3. SUPABASE_URL            → JWKS-Verifikation (neue Supabase-Projekte)
 """
@@ -14,7 +23,7 @@ Modi (siehe config.py):
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import jwt
 from fastapi import Depends, Header, HTTPException
@@ -22,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from estimateiq.angebot import config
 from estimateiq.angebot.database import get_db
-from estimateiq.angebot.models import TenantUser
+from estimateiq.angebot.models import Permission, TeamrollePermission, TenantUser
 
 logger = logging.getLogger(__name__)
 
@@ -59,19 +68,36 @@ def _decode_token(token: str) -> dict:
 
 @dataclass
 class CurrentUser:
-    """Aufgelöster Request-Kontext: Wer stellt die Anfrage, in welchem Tenant, mit welcher Rolle."""
+    """Aufgelöster Request-Kontext: Wer, in welchem Tenant, mit welchen Rechten."""
     user_id: str
     tenant_id: str
-    rolle: str          # 'admin' | 'mitglied'
+    teamrolle_id: int | None
+    teamrolle_name: str
+    permissions: frozenset[str] = field(default_factory=frozenset)
     email: str | None = None
 
     @property
-    def ist_admin(self) -> bool:
-        return self.rolle == "admin"
+    def ist_owner(self) -> bool:
+        """Für die Sonderregel 'nur Owner darf die Owner-Rolle vergeben' – bewusst
+        namensbasiert, nicht permissionbasiert, weil Admin dieselben Permissions
+        wie Owner hat."""
+        return self.teamrolle_name == "Owner"
+
+    def hat_permission(self, key: str) -> bool:
+        return key in self.permissions
 
 
-# Fester Kontext für die lokale Entwicklung ohne Login (immer Admin).
+# Fester Kontext für die lokale Entwicklung ohne Login (immer volle Rechte).
 _DEV_USER_ID = "dev-user"
+
+
+def _lade_permissions(db: Session, teamrolle_id: int) -> frozenset[str]:
+    keys = (
+        db.query(TeamrollePermission.permission_key)
+        .filter(TeamrollePermission.teamrolle_id == teamrolle_id)
+        .all()
+    )
+    return frozenset(k for (k,) in keys)
 
 
 def get_current_user(
@@ -79,10 +105,13 @@ def get_current_user(
     db: Session = Depends(get_db),
 ) -> CurrentUser:
     if config.AUTH_DISABLED:
+        alle_permissions = frozenset(p.key for p in db.query(Permission).all())
         return CurrentUser(
             user_id=_DEV_USER_ID,
             tenant_id=config.DEV_TENANT_ID,
-            rolle="admin",
+            teamrolle_id=None,
+            teamrolle_name="Owner",
+            permissions=alle_permissions,
             email="dev@local",
         )
 
@@ -112,10 +141,13 @@ def get_current_user(
             403, "Benutzer ist keinem Tenant zugeordnet. Bitte Administrator kontaktieren."
         )
 
+    teamrolle = zuordnung.teamrolle  # via relationship, ein zusätzlicher Join
     return CurrentUser(
         user_id=user_id,
         tenant_id=zuordnung.tenant_id,
-        rolle=zuordnung.rolle or "mitglied",
+        teamrolle_id=teamrolle.id,
+        teamrolle_name=teamrolle.name,
+        permissions=_lade_permissions(db, teamrolle.id),
         email=zuordnung.email or payload.get("email"),
     )
 
@@ -123,3 +155,17 @@ def get_current_user(
 def get_tenant_id(current: CurrentUser = Depends(get_current_user)) -> str:
     """Rückwärtskompatibel: liefert nur die tenant_id des aktuellen Users."""
     return current.tenant_id
+
+
+def require_permission(key: str):
+    """
+    Dependency-Factory: Endpunkt-Signatur `user: CurrentUser = Depends(require_permission("..."))`
+    ersetzt `Depends(get_current_user)` 1:1 (liefert denselben CurrentUser),
+    prüft aber zusätzlich die Permission und wirft 403 statt eines leeren
+    200-Ergebnisses.
+    """
+    def _check(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+        if not user.hat_permission(key):
+            raise HTTPException(403, f"Fehlende Berechtigung: {key}")
+        return user
+    return _check

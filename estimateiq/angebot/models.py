@@ -53,8 +53,14 @@ class TenantUser(Base):
         String(36), ForeignKey("tenants.id"), nullable=False, index=True
     )
     email: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    # Rolle innerhalb des Tenants: 'admin' (Vollzugriff) oder 'mitglied'
+    teamrolle_id: Mapped[int] = mapped_column(ForeignKey("teamrollen.id"), nullable=False)
+    # 'aktiv' | 'eingeladen' (Einladungs-Flow ist Phase 1b, aktuell immer 'aktiv')
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="aktiv")
+    # LEGACY (Phase 1): wird ab sofort nirgends mehr gelesen, nur noch physisch
+    # vorhanden für die Backfill-Migration. Wird in Migration 004 gedroppt.
     rolle: Mapped[str] = mapped_column(String(20), nullable=False, default="mitglied")
+
+    teamrolle: Mapped["Teamrolle"] = relationship()
 
 
 class Rolle(Base):
@@ -158,3 +164,58 @@ class Angebot(Base):
     erstellt_am: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     projekt: Mapped["Projekt"] = relationship(back_populates="angebote")
+
+
+# ── Teamrollen & Permissions (RBAC Phase 1) ───────────────────────────────────
+# Bewusst "Teamrolle" statt "Rolle" genannt: "Rolle" ist bereits die
+# Stundensatz-Rolle oben (z. B. "Senior Developer") und bleibt unangetastet.
+
+class Teamrolle(Base):
+    __tablename__ = "teamrollen"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_teamrollen_tenant_name"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Systemrollen (Owner/Admin/Mitarbeiter/Nur-Lesen): Name + Löschen gesperrt.
+    # Owner zusätzlich komplett read-only (auch Permissions), das wird im
+    # Router erzwungen, nicht hier im Modell.
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    beschreibung: Mapped[str | None] = mapped_column(Text, nullable=True)
+    erstellt_am: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class Permission(Base):
+    """Globaler Permission-Katalog – kein tenant_id, wird per Migration gepflegt."""
+    __tablename__ = "permissions"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    bereich: Mapped[str] = mapped_column(String(50), nullable=False)
+    beschreibung: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class TeamrollePermission(Base):
+    __tablename__ = "teamrolle_permissions"
+
+    teamrolle_id: Mapped[int] = mapped_column(ForeignKey("teamrollen.id"), primary_key=True)
+    permission_key: Mapped[str] = mapped_column(ForeignKey("permissions.key"), primary_key=True)
+
+
+class AuditLogEintrag(Base):
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    actor_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    aktion: Mapped[str] = mapped_column(String(100), nullable=False)
+    ziel_typ: Mapped[str] = mapped_column(String(50), nullable=False)
+    ziel_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    vorher: Mapped[str | None] = mapped_column(Text, nullable=True)   # JSON-Text
+    nachher: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON-Text
+    erstellt_am: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

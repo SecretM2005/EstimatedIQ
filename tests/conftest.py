@@ -28,7 +28,7 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from estimateiq.angebot import config, models  # noqa: E402
-from estimateiq.angebot.database import Base, SessionLocal, engine  # noqa: E402
+from estimateiq.angebot.database import Base, SessionLocal, engine, ensure_systemrollen  # noqa: E402
 from estimateiq.api.main import app  # noqa: E402
 
 
@@ -36,9 +36,16 @@ class Helpers:
     """Test-Konstanten + JWT-Helfer, per `h`-Fixture in Tests verfügbar."""
     TENANT_A = "tenant-a"
     TENANT_B = "tenant-b"
-    USER_A = "user-a"      # Mitglied in Tenant A
-    USER_B = "user-b"      # Mitglied in Tenant B
-    ADMIN_A = "admin-a"    # Admin in Tenant A
+    USER_A = "user-a"          # Mitarbeiter in Tenant A
+    USER_B = "user-b"          # Mitarbeiter in Tenant B
+    ADMIN_A = "admin-a"        # Admin in Tenant A
+    ADMIN_B = "admin-b"        # Admin in Tenant B (für Cross-Tenant-Tests auf Admin-Ebene)
+    OWNER_A = "owner-a"        # Owner in Tenant A
+    NURLESEN_A = "nurlesen-a"  # Nur-Lesen in Tenant A
+
+    # name → teamrolle_id, je Tenant. Wird von db_factory befüllt.
+    teamrollen_a: dict[str, int] = {}
+    teamrollen_b: dict[str, int] = {}
 
     @staticmethod
     def token(user_id: str) -> str:
@@ -67,7 +74,11 @@ def h() -> type[Helpers]:
 
 @pytest.fixture()
 def db_factory():
-    """Frische Tabellen + zwei Tenants/Benutzer je Test. Liefert die SessionLocal-Factory."""
+    """
+    Frische Tabellen, zwei Tenants mit vollständigen Systemrollen, fünf
+    Test-Benutzer (Mitarbeiter × 2, Admin, Owner, Nur-Lesen). Liefert die
+    SessionLocal-Factory.
+    """
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     s = SessionLocal()
@@ -75,9 +86,37 @@ def db_factory():
         s.add_all([
             models.Tenant(id=Helpers.TENANT_A, name="Tenant A GmbH"),
             models.Tenant(id=Helpers.TENANT_B, name="Tenant B GmbH"),
-            models.TenantUser(user_id=Helpers.USER_A, tenant_id=Helpers.TENANT_A, email="a@a.de", rolle="mitglied"),
-            models.TenantUser(user_id=Helpers.USER_B, tenant_id=Helpers.TENANT_B, email="b@b.de", rolle="mitglied"),
-            models.TenantUser(user_id=Helpers.ADMIN_A, tenant_id=Helpers.TENANT_A, email="admin@a.de", rolle="admin"),
+        ])
+        s.commit()
+
+        Helpers.teamrollen_a = ensure_systemrollen(s, Helpers.TENANT_A)
+        Helpers.teamrollen_b = ensure_systemrollen(s, Helpers.TENANT_B)
+
+        s.add_all([
+            models.TenantUser(
+                user_id=Helpers.USER_A, tenant_id=Helpers.TENANT_A, email="a@a.de",
+                teamrolle_id=Helpers.teamrollen_a["Mitarbeiter"], status="aktiv",
+            ),
+            models.TenantUser(
+                user_id=Helpers.USER_B, tenant_id=Helpers.TENANT_B, email="b@b.de",
+                teamrolle_id=Helpers.teamrollen_b["Mitarbeiter"], status="aktiv",
+            ),
+            models.TenantUser(
+                user_id=Helpers.ADMIN_B, tenant_id=Helpers.TENANT_B, email="admin@b.de",
+                teamrolle_id=Helpers.teamrollen_b["Admin"], status="aktiv",
+            ),
+            models.TenantUser(
+                user_id=Helpers.ADMIN_A, tenant_id=Helpers.TENANT_A, email="admin@a.de",
+                teamrolle_id=Helpers.teamrollen_a["Admin"], status="aktiv",
+            ),
+            models.TenantUser(
+                user_id=Helpers.OWNER_A, tenant_id=Helpers.TENANT_A, email="owner@a.de",
+                teamrolle_id=Helpers.teamrollen_a["Owner"], status="aktiv",
+            ),
+            models.TenantUser(
+                user_id=Helpers.NURLESEN_A, tenant_id=Helpers.TENANT_A, email="nurlesen@a.de",
+                teamrolle_id=Helpers.teamrollen_a["Nur-Lesen"], status="aktiv",
+            ),
         ])
         s.commit()
     finally:

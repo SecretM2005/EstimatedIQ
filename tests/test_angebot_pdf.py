@@ -10,18 +10,23 @@ from estimateiq.angebot.pdf_export import erstelle_angebots_pdf
 
 
 def test_angebotssumme_wird_korrekt_aggregiert(client, h, fake_embed):
-    """soll_kosten = Summe(soll_stunden * Stundensatz) über die Positionen."""
+    """
+    soll_kosten = Summe(soll_stunden * Stundensatz) über die Positionen.
+    Mit OWNER_A (hat projekte.marge_einsehen) – Mitarbeiter ohne diese
+    Permission bekommen das Feld serverseitig gar nicht erst zurück
+    (siehe tests/test_teamrollen_permissions.py).
+    """
     pid = client.post("/api/v2/projekte", json={"name": "Kalkulation"},
-                      headers=h.auth(h.USER_A)).json()["id"]
+                      headers=h.auth(h.OWNER_A)).json()["id"]
 
     client.post(f"/api/v2/projekte/{pid}/positionen",
                 json={"beschreibung_text": "Konzept", "soll_stunden": 10, "stundensatz_eur": 100},
-                headers=h.auth(h.USER_A))
+                headers=h.auth(h.OWNER_A))
     client.post(f"/api/v2/projekte/{pid}/positionen",
                 json={"beschreibung_text": "Umsetzung", "soll_stunden": 20, "stundensatz_eur": 120},
-                headers=h.auth(h.USER_A))
+                headers=h.auth(h.OWNER_A))
 
-    projekt = client.get(f"/api/v2/projekte/{pid}", headers=h.auth(h.USER_A)).json()
+    projekt = client.get(f"/api/v2/projekte/{pid}", headers=h.auth(h.OWNER_A)).json()
 
     assert projekt["soll_stunden_gesamt"] == 30.0
     assert projekt["soll_kosten"] == 10 * 100 + 20 * 120  # 3400

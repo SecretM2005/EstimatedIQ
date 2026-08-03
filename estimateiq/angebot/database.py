@@ -78,6 +78,13 @@ def _migrate_sqlite() -> None:
         ("rollen",              "tenant_id",       f"TEXT NOT NULL DEFAULT '{dev_tenant}'"),
         ("angebote",            "tenant_id",       f"TEXT NOT NULL DEFAULT '{dev_tenant}'"),
         ("tenant_users",        "rolle",           "TEXT NOT NULL DEFAULT 'mitglied'"),
+        # RBAC Phase 1: teamrolle_id bleibt hier bewusst NULLABLE – SQLite kann
+        # nach dem Anlegen keine NOT-NULL-Constraint mehr nachträglich setzen.
+        # Die Anwendung befüllt die Spalte unten per Backfill vollständig;
+        # das ORM-Modell verlangt NOT NULL (gilt strikt für neue Zeilen).
+        # Auf Postgres/Supabase erzwingt migrations/003 die Constraint echt.
+        ("tenant_users",        "teamrolle_id",    "INTEGER"),
+        ("tenant_users",        "status",          "TEXT NOT NULL DEFAULT 'aktiv'"),
     ]
     with engine.connect() as conn:
         for table, column, definition in migrations:
@@ -91,6 +98,37 @@ def _migrate_sqlite() -> None:
                 )
         conn.commit()
 
+    _backfill_teamrollen()
+
+
+def _backfill_teamrollen() -> None:
+    """
+    RBAC Phase 1: legt für jeden bestehenden Tenant die Systemrollen an und
+    befüllt tenant_users.teamrolle_id für Zeilen, die noch keine haben –
+    abgeleitet aus der alten rolle-Spalte (admin→Owner, mitglied→Mitarbeiter).
+    Idempotent (WHERE teamrolle_id IS NULL), harmlos bei jedem Start.
+    """
+    from estimateiq.angebot.models import Tenant, TenantUser
+
+    db = SessionLocal()
+    try:
+        offene = db.query(TenantUser).filter(TenantUser.teamrolle_id.is_(None)).all()
+        if not offene:
+            return
+        tenant_ids = {u.tenant_id for u in offene}
+        for tid in tenant_ids:
+            if db.get(Tenant, tid) is None:
+                continue
+            rollen = ensure_systemrollen(db, tid)
+            for u in offene:
+                if u.tenant_id != tid:
+                    continue
+                u.teamrolle_id = rollen["Owner"] if u.rolle == "admin" else rollen["Mitarbeiter"]
+        db.commit()
+        logger.info("RBAC-Backfill: %d tenant_users-Zeile(n) migriert.", len(offene))
+    finally:
+        db.close()
+
 
 def _ensure_dev_tenant() -> None:
     """Legt im Dev-Modus (AUTH_DISABLED) den festen Dev-Tenant an."""
@@ -102,8 +140,47 @@ def _ensure_dev_tenant() -> None:
             db.add(Tenant(id=config.DEV_TENANT_ID, name=config.DEV_TENANT_NAME))
             db.commit()
             logger.info("Dev-Tenant angelegt: %s", config.DEV_TENANT_ID)
+        ensure_systemrollen(db, config.DEV_TENANT_ID)
     finally:
         db.close()
+
+
+def ensure_systemrollen(db, tenant_id: str) -> dict[str, int]:
+    """
+    Legt den globalen Permission-Katalog (falls fehlend) sowie die vier
+    Systemrollen (Owner/Admin/Mitarbeiter/Nur-Lesen) für einen Tenant an.
+    Idempotent (get-or-create). Einzige Stelle, die Systemrollen erzeugt –
+    wird von SQLite-Migration, Seed-Skript und Test-Fixtures gleichermaßen
+    genutzt, damit es hierfür nur einen Codepfad gibt.
+
+    Gibt {Rollenname: teamrolle_id} zurück.
+    """
+    from estimateiq.angebot.models import Permission, Teamrolle, TeamrollePermission
+    from estimateiq.angebot.permissions import KATALOG, SYSTEMROLLEN, SYSTEMROLLEN_REIHENFOLGE
+
+    vorhandene_keys = {p.key for p in db.query(Permission).all()}
+    for key, bereich, beschreibung in KATALOG:
+        if key not in vorhandene_keys:
+            db.add(Permission(key=key, bereich=bereich, beschreibung=beschreibung))
+    db.flush()
+
+    ergebnis: dict[str, int] = {}
+    for name in SYSTEMROLLEN_REIHENFOLGE:
+        rolle = (
+            db.query(Teamrolle)
+            .filter(Teamrolle.tenant_id == tenant_id, Teamrolle.name == name)
+            .first()
+        )
+        if rolle is None:
+            rolle = Teamrolle(tenant_id=tenant_id, name=name, is_system=True)
+            db.add(rolle)
+            db.flush()
+            for key in SYSTEMROLLEN[name]:
+                db.add(TeamrollePermission(teamrolle_id=rolle.id, permission_key=key))
+        ergebnis[name] = rolle.id
+
+    db.commit()
+    return ergebnis
 
 
 def init_db():
