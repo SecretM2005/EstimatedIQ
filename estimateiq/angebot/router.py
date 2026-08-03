@@ -20,6 +20,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
@@ -31,9 +32,10 @@ from estimateiq.angebot.auth import CurrentUser, get_current_user, get_tenant_id
 from estimateiq.angebot.database import get_db
 from estimateiq.angebot.models import (
     AuditLogEintrag, Permission, Rolle, Projekt, Leistungsposition, Angebot,
-    Tenant, TenantUser, Teamrolle, TeamrollePermission,
+    Tenant, TenantUser, Teamrolle, TeamrollePermission, KpiDefinition, DashboardLayout,
 )
 from estimateiq.angebot.permissions import GUELTIGE_KEYS
+from estimateiq.angebot import kpi_registry
 from estimateiq.angebot.similarity import suche_aehnliche, suche_aehnliche_projekte
 from estimateiq.angebot.csv_import import parse_upload
 from estimateiq.angebot.pdf_export import erstelle_angebots_pdf
@@ -1287,6 +1289,457 @@ def loesche_team_mitglied(
                vorher={"email": tu.email, "teamrolle": tu.teamrolle.name})
     db.delete(tu)
     db.commit()
+
+
+# ── KPIs (No-Code-Builder, RBAC Phase 2/3) ───────────────────────────────────
+# KEIN freies SQL: jede Definition läuft durch kpi_registry.validiere_definition()
+# gegen die Whitelist. settings.manage_kpis gilt für den gesamten Builder
+# (Katalog ansehen, Kennzahlen anlegen/ändern/löschen, Vorschau berechnen).
+
+class KpiFilterIn(BaseModel):
+    feld: str
+    operator: str
+    wert: Any
+
+class KpiZeitraumIn(BaseModel):
+    typ: str
+    von: str | None = None
+    bis: str | None = None
+
+class KpiDefinitionCreate(BaseModel):
+    key: str
+    label: str
+    beschreibung: str | None = None
+    quelle: str
+    feld: str
+    aggregation: str
+    filters: list[KpiFilterIn] = []
+    zeitraum: KpiZeitraumIn | None = None
+    darstellungstyp: str = "zahl"
+    format: str | None = None
+    required_permission: str | None = None
+
+class KpiDefinitionUpdate(BaseModel):
+    label: str | None = None
+    beschreibung: str | None = None
+    quelle: str | None = None
+    feld: str | None = None
+    aggregation: str | None = None
+    filters: list[KpiFilterIn] | None = None
+    zeitraum: KpiZeitraumIn | None = None
+    darstellungstyp: str | None = None
+    format: str | None = None
+    required_permission: str | None = None
+
+class KpiVorschauRequest(BaseModel):
+    quelle: str
+    feld: str
+    aggregation: str
+    filters: list[KpiFilterIn] = []
+    zeitraum: KpiZeitraumIn | None = None
+
+class KpiDefinitionOut(BaseModel):
+    id: int
+    key: str
+    label: str
+    beschreibung: str | None = None
+    is_system: bool
+    quelle: str | None = None
+    feld: str | None = None
+    aggregation: str | None = None
+    filters: list[dict] = []
+    zeitraum: dict | None = None
+    darstellungstyp: str
+    format: str | None = None
+    required_permission: str | None = None
+    created_by: str | None = None
+    erstellt_am: datetime
+
+
+def _kpi_out(k: KpiDefinition) -> KpiDefinitionOut:
+    return KpiDefinitionOut(
+        id=k.id, key=k.key, label=k.label, beschreibung=k.beschreibung, is_system=k.is_system,
+        quelle=k.quelle, feld=k.feld, aggregation=k.aggregation,
+        filters=k.get_filters(), zeitraum=k.get_zeitraum(),
+        darstellungstyp=k.darstellungstyp, format=k.format,
+        required_permission=k.required_permission, created_by=k.created_by,
+        erstellt_am=k.erstellt_am,
+    )
+
+
+def _hole_kpi_definition(db: Session, user: CurrentUser, kpi_id: int) -> KpiDefinition:
+    kpi = (
+        db.query(KpiDefinition)
+        .filter(KpiDefinition.id == kpi_id, KpiDefinition.tenant_id == user.tenant_id)
+        .first()
+    )
+    if not kpi:
+        raise HTTPException(404, "Kennzahl nicht gefunden.")
+    return kpi
+
+
+def _validiere_required_permission(required_permission: str | None) -> None:
+    if required_permission is not None and required_permission not in GUELTIGE_KEYS:
+        raise HTTPException(400, f"Unbekannter Permission-Key: '{required_permission}'.")
+
+
+@router.get("/kpi-registry")
+def hole_kpi_registry(
+    user: CurrentUser = Depends(require_permission("settings.manage_kpis")),
+):
+    """Whitelist-Katalog (Quellen/Felder/Aggregationen/Operatoren) für den Wizard."""
+    return kpi_registry.registry_katalog()
+
+
+@router.get("/kpi-definitionen", response_model=list[KpiDefinitionOut])
+def liste_kpi_definitionen(
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_permission("settings.manage_kpis")),
+):
+    kpis = (
+        db.query(KpiDefinition)
+        .filter(KpiDefinition.tenant_id == user.tenant_id)
+        .order_by(KpiDefinition.is_system.desc(), KpiDefinition.label)
+        .all()
+    )
+    return [_kpi_out(k) for k in kpis]
+
+
+@router.post("/kpi-definitionen", response_model=KpiDefinitionOut, status_code=201)
+def erstelle_kpi_definition(
+    body: KpiDefinitionCreate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_permission("settings.manage_kpis")),
+):
+    if body.darstellungstyp != "zahl":
+        raise HTTPException(400, "Custom-Kennzahlen unterstützen aktuell nur darstellungstyp='zahl'.")
+
+    filters = [f.model_dump() for f in body.filters]
+    zeitraum = body.zeitraum.model_dump(exclude_none=True) if body.zeitraum else None
+    try:
+        kpi_registry.validiere_definition(body.quelle, body.feld, body.aggregation, filters, zeitraum)
+    except kpi_registry.UngueltigeDefinition as exc:
+        raise HTTPException(400, str(exc))
+    _validiere_required_permission(body.required_permission)
+
+    if db.query(KpiDefinition).filter(
+        KpiDefinition.tenant_id == user.tenant_id, KpiDefinition.key == body.key,
+    ).first():
+        raise HTTPException(409, f"Kennzahl-Key '{body.key}' existiert bereits.")
+
+    kpi = KpiDefinition(
+        tenant_id=user.tenant_id, key=body.key, label=body.label, beschreibung=body.beschreibung,
+        is_system=False, quelle=body.quelle, feld=body.feld, aggregation=body.aggregation,
+        darstellungstyp=body.darstellungstyp, format=body.format,
+        required_permission=body.required_permission, created_by=user.user_id,
+    )
+    kpi.set_filters(filters)
+    kpi.set_zeitraum(zeitraum)
+    db.add(kpi)
+    db.commit()
+    db.refresh(kpi)
+    _log_audit(db, user, "kpi_erstellt", "kpi_definition", kpi.id, nachher=_kpi_out(kpi).model_dump(mode="json"))
+    db.commit()
+    return _kpi_out(kpi)
+
+
+@router.patch("/kpi-definitionen/{kpi_id}", response_model=KpiDefinitionOut)
+def aktualisiere_kpi_definition(
+    kpi_id: int,
+    body: KpiDefinitionUpdate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_permission("settings.manage_kpis")),
+):
+    kpi = _hole_kpi_definition(db, user, kpi_id)
+    if kpi.is_system:
+        raise HTTPException(403, "System-Kennzahlen können nicht verändert werden.")
+
+    vorher = _kpi_out(kpi).model_dump(mode="json")
+    updates = body.model_dump(exclude_unset=True)
+
+    if updates.get("darstellungstyp", "zahl") != "zahl":
+        raise HTTPException(400, "Custom-Kennzahlen unterstützen aktuell nur darstellungstyp='zahl'.")
+
+    quelle = updates.get("quelle", kpi.quelle)
+    feld = updates.get("feld", kpi.feld)
+    aggregation = updates.get("aggregation", kpi.aggregation)
+    filters = updates.get("filters", kpi.get_filters())
+    zeitraum = updates.get("zeitraum", kpi.get_zeitraum())
+    try:
+        kpi_registry.validiere_definition(quelle, feld, aggregation, filters, zeitraum)
+    except kpi_registry.UngueltigeDefinition as exc:
+        raise HTTPException(400, str(exc))
+    if "required_permission" in updates:
+        _validiere_required_permission(updates["required_permission"])
+
+    for feldname in ("label", "beschreibung", "quelle", "feld", "aggregation", "darstellungstyp", "format", "required_permission"):
+        if feldname in updates:
+            setattr(kpi, feldname, updates[feldname])
+    if "filters" in updates:
+        kpi.set_filters(updates["filters"])
+    if "zeitraum" in updates:
+        kpi.set_zeitraum(updates["zeitraum"])
+
+    db.commit()
+    nachher = _kpi_out(kpi).model_dump(mode="json")
+    _log_audit(db, user, "kpi_geaendert", "kpi_definition", kpi.id, vorher=vorher, nachher=nachher)
+    db.commit()
+    return _kpi_out(kpi)
+
+
+@router.delete("/kpi-definitionen/{kpi_id}", status_code=204)
+def loesche_kpi_definition(
+    kpi_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_permission("settings.manage_kpis")),
+):
+    kpi = _hole_kpi_definition(db, user, kpi_id)
+    if kpi.is_system:
+        raise HTTPException(403, "System-Kennzahlen können nicht gelöscht werden.")
+    _log_audit(db, user, "kpi_geloescht", "kpi_definition", kpi.id, vorher=_kpi_out(kpi).model_dump(mode="json"))
+    db.delete(kpi)
+    db.commit()
+
+
+@router.post("/kpi-definitionen/vorschau")
+def kpi_vorschau(
+    body: KpiVorschauRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_permission("settings.manage_kpis")),
+):
+    """Berechnet den Wert einer NOCH NICHT gespeicherten Definition live –
+    für die sofortige Vorschau im Wizard, bevor der Admin speichert."""
+    filters = [f.model_dump() for f in body.filters]
+    zeitraum = body.zeitraum.model_dump(exclude_none=True) if body.zeitraum else None
+    try:
+        wert = kpi_registry.berechne_kennzahl(
+            db, user.tenant_id, body.quelle, body.feld, body.aggregation,
+            filters=filters, zeitraum=zeitraum,
+            sichtbarkeits_filter=_sichtbarkeits_bedingung(user),
+        )
+    except kpi_registry.UngueltigeDefinition as exc:
+        raise HTTPException(400, str(exc))
+    return {"wert": wert}
+
+
+# ── Dashboard-Layout (RBAC Phase 2/3) ────────────────────────────────────────
+# Auflösungsreihenfolge: user > role > tenant_default > Code-Systemdefault.
+# Bearbeiten (PUT/DELETE) ist IMMER an settings.manage_layout gebunden – auch
+# für das eigene persönliche Layout (scope=user); Lesen des eigenen Dashboards
+# braucht nur dashboard.view. "Ansehen als Rolle X" (als_rolle_id) ist eine
+# Admin-Vorschau und daher zusätzlich an settings.manage_layout gebunden.
+
+class LayoutWidgetIn(BaseModel):
+    kpi_id: int
+    x: int = 0
+    y: int = 0
+    w: int = 1
+    h: int = 1
+
+class DashboardLayoutIn(BaseModel):
+    scope: str
+    scope_ref_id: str | None = None
+    layout: list[LayoutWidgetIn]
+
+class DashboardLayoutOut(BaseModel):
+    scope: str
+    scope_ref_id: str
+    layout: list[dict]
+
+
+def _sichtbarkeits_bedingung(user: CurrentUser, permissions: frozenset[str] | None = None):
+    """Dieselbe Regel wie _ist_sichtbar/dashboard_stats, als SQL-Bedingung –
+    hier zusätzlich mit einem austauschbaren Permission-Set (für die
+    Rollen-Vorschau), aber immer mit dem echten Aufrufer als Ownership-Anker
+    (eine fremde Rolle ohne echten Nutzer kann nicht authentisch emuliert
+    werden – das ist eine bewusste Vereinfachung der Vorschau)."""
+    perms = permissions if permissions is not None else user.permissions
+    if "projekte.alle_ansehen" in perms:
+        return None
+    return or_(Projekt.ersteller_id == user.user_id, Projekt.ersteller_id.is_(None))
+
+
+def _standard_layout(db: Session, tenant_id: str) -> list[dict]:
+    """Code-seitiger Systemdefault, falls für keinen Scope ein Layout existiert."""
+    kpis = (
+        db.query(KpiDefinition)
+        .filter(KpiDefinition.tenant_id == tenant_id, KpiDefinition.is_system == True)  # noqa: E712
+        .order_by(KpiDefinition.id)
+        .all()
+    )
+    return [{"kpi_id": k.id, "x": i % 2, "y": i // 2, "w": 1, "h": 1} for i, k in enumerate(kpis)]
+
+
+def _resolve_layout(
+    db: Session, tenant_id: str, *, user_id: str | None, teamrolle_id: int | None,
+) -> tuple[str, list[dict]]:
+    if user_id is not None:
+        row = db.query(DashboardLayout).filter(
+            DashboardLayout.tenant_id == tenant_id, DashboardLayout.scope == "user",
+            DashboardLayout.scope_ref_id == user_id,
+        ).first()
+        if row:
+            return "user", row.get_layout()
+
+    if teamrolle_id is not None:
+        row = db.query(DashboardLayout).filter(
+            DashboardLayout.tenant_id == tenant_id, DashboardLayout.scope == "role",
+            DashboardLayout.scope_ref_id == str(teamrolle_id),
+        ).first()
+        if row:
+            return "role", row.get_layout()
+
+    row = db.query(DashboardLayout).filter(
+        DashboardLayout.tenant_id == tenant_id, DashboardLayout.scope == "tenant_default",
+        DashboardLayout.scope_ref_id == "",
+    ).first()
+    if row:
+        return "tenant_default", row.get_layout()
+
+    return "system_default", _standard_layout(db, tenant_id)
+
+
+def _permissions_fuer_teamrolle(db: Session, teamrolle_id: int) -> frozenset[str]:
+    keys = (
+        db.query(TeamrollePermission.permission_key)
+        .filter(TeamrollePermission.teamrolle_id == teamrolle_id)
+        .all()
+    )
+    return frozenset(k for (k,) in keys)
+
+
+@router.get("/dashboard/layout")
+def hole_dashboard_layout(
+    als_rolle_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_permission("dashboard.view")),
+):
+    if als_rolle_id is not None:
+        if not user.hat_permission("settings.manage_layout"):
+            raise HTTPException(403, "Nur mit settings.manage_layout darf das Dashboard als andere Rolle angesehen werden.")
+        rolle = (
+            db.query(Teamrolle)
+            .filter(Teamrolle.id == als_rolle_id, Teamrolle.tenant_id == user.tenant_id)
+            .first()
+        )
+        if not rolle:
+            raise HTTPException(404, "Teamrolle nicht gefunden.")
+        viewer_permissions = _permissions_fuer_teamrolle(db, als_rolle_id)
+        scope_used, layout = _resolve_layout(db, user.tenant_id, user_id=None, teamrolle_id=als_rolle_id)
+    else:
+        viewer_permissions = user.permissions
+        scope_used, layout = _resolve_layout(
+            db, user.tenant_id, user_id=user.user_id, teamrolle_id=user.teamrolle_id,
+        )
+
+    sichtbarkeits_filter = _sichtbarkeits_bedingung(user, viewer_permissions)
+
+    widgets = []
+    for eintrag in layout:
+        kpi = (
+            db.query(KpiDefinition)
+            .filter(KpiDefinition.id == eintrag["kpi_id"], KpiDefinition.tenant_id == user.tenant_id)
+            .first()
+        )
+        if not kpi:
+            continue  # Kennzahl wurde gelöscht – Widget wird stillschweigend übersprungen
+        wert_daten = kpi_registry.berechne_kpi_wert(db, user.tenant_id, kpi, sichtbarkeits_filter, viewer_permissions)
+        if wert_daten is None:
+            continue  # required_permission fehlt: Wert ist nicht Teil der Response
+        widgets.append({
+            "kpi_id": kpi.id, "key": kpi.key, "label": kpi.label,
+            "darstellungstyp": kpi.darstellungstyp, "format": kpi.format,
+            "x": eintrag.get("x", 0), "y": eintrag.get("y", 0),
+            "w": eintrag.get("w", 1), "h": eintrag.get("h", 1),
+            **wert_daten,
+        })
+    return {"scope_used": scope_used, "widgets": widgets}
+
+
+@router.put("/dashboard/layout", response_model=DashboardLayoutOut)
+def setze_dashboard_layout(
+    body: DashboardLayoutIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_permission("settings.manage_layout")),
+):
+    if body.scope not in ("user", "role", "tenant_default"):
+        raise HTTPException(400, f"Ungültiger Scope: '{body.scope}'.")
+
+    if body.scope == "user":
+        scope_ref_id = user.user_id
+    elif body.scope == "tenant_default":
+        scope_ref_id = ""
+    else:
+        if not body.scope_ref_id:
+            raise HTTPException(400, "scope_ref_id (Teamrolle-ID) ist für scope='role' erforderlich.")
+        rolle = (
+            db.query(Teamrolle)
+            .filter(Teamrolle.id == body.scope_ref_id, Teamrolle.tenant_id == user.tenant_id)
+            .first()
+        )
+        if not rolle:
+            raise HTTPException(400, "Teamrolle für scope='role' in diesem Tenant nicht gefunden.")
+        scope_ref_id = body.scope_ref_id
+
+    layout = [w.model_dump() for w in body.layout]
+    kpi_ids = {w["kpi_id"] for w in layout}
+    if kpi_ids:
+        gefundene = {
+            row[0] for row in db.query(KpiDefinition.id).filter(
+                KpiDefinition.id.in_(kpi_ids), KpiDefinition.tenant_id == user.tenant_id,
+            ).all()
+        }
+        fehlende = kpi_ids - gefundene
+        if fehlende:
+            raise HTTPException(400, f"Unbekannte Kennzahl-ID(s) für diesen Tenant: {sorted(fehlende)}")
+
+    row = db.query(DashboardLayout).filter(
+        DashboardLayout.tenant_id == user.tenant_id, DashboardLayout.scope == body.scope,
+        DashboardLayout.scope_ref_id == scope_ref_id,
+    ).first()
+    vorher = row.get_layout() if row else None
+    if row:
+        row.set_layout(layout)
+        row.updated_by = user.user_id
+    else:
+        row = DashboardLayout(
+            tenant_id=user.tenant_id, scope=body.scope, scope_ref_id=scope_ref_id,
+            updated_by=user.user_id, layout_json="[]",
+        )
+        row.set_layout(layout)
+        db.add(row)
+    db.commit()
+    _log_audit(db, user, "dashboard_layout_geaendert", "dashboard_layout", f"{body.scope}:{scope_ref_id}",
+               vorher=vorher, nachher=layout)
+    db.commit()
+    return DashboardLayoutOut(scope=body.scope, scope_ref_id=scope_ref_id, layout=layout)
+
+
+@router.delete("/dashboard/layout", status_code=204)
+def loesche_dashboard_layout(
+    scope: str,
+    scope_ref_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_permission("settings.manage_layout")),
+):
+    if scope not in ("user", "role", "tenant_default"):
+        raise HTTPException(400, f"Ungültiger Scope: '{scope}'.")
+    if scope == "user":
+        scope_ref_id = user.user_id
+    elif scope == "tenant_default":
+        scope_ref_id = ""
+    elif not scope_ref_id:
+        raise HTTPException(400, "scope_ref_id ist für scope='role' erforderlich.")
+
+    row = db.query(DashboardLayout).filter(
+        DashboardLayout.tenant_id == user.tenant_id, DashboardLayout.scope == scope,
+        DashboardLayout.scope_ref_id == scope_ref_id,
+    ).first()
+    if row:
+        _log_audit(db, user, "dashboard_layout_zurueckgesetzt", "dashboard_layout", f"{scope}:{scope_ref_id}",
+                   vorher=row.get_layout())
+        db.delete(row)
+        db.commit()
 
 
 # ── Audit-Log ─────────────────────────────────────────────────────────────────

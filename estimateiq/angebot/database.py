@@ -99,6 +99,7 @@ def _migrate_sqlite() -> None:
         conn.commit()
 
     _backfill_teamrollen()
+    _backfill_system_kpis()
 
 
 def _backfill_teamrollen() -> None:
@@ -130,6 +131,22 @@ def _backfill_teamrollen() -> None:
         db.close()
 
 
+def _backfill_system_kpis() -> None:
+    """
+    RBAC Phase 2/3: kpi_definitions/dashboard_layouts sind neue Tabellen ohne
+    Vorgängerspalte – jeder bestehende Tenant braucht die initialen
+    System-KPIs einmalig nachgetragen. Idempotent über ensure_system_kpis().
+    """
+    from estimateiq.angebot.models import Tenant
+
+    db = SessionLocal()
+    try:
+        for tenant in db.query(Tenant).all():
+            ensure_system_kpis(db, tenant.id)
+    finally:
+        db.close()
+
+
 def _ensure_dev_tenant() -> None:
     """Legt im Dev-Modus (AUTH_DISABLED) den festen Dev-Tenant an."""
     from estimateiq.angebot.models import Tenant
@@ -141,6 +158,7 @@ def _ensure_dev_tenant() -> None:
             db.commit()
             logger.info("Dev-Tenant angelegt: %s", config.DEV_TENANT_ID)
         ensure_systemrollen(db, config.DEV_TENANT_ID)
+        ensure_system_kpis(db, config.DEV_TENANT_ID)
     finally:
         db.close()
 
@@ -178,6 +196,35 @@ def ensure_systemrollen(db, tenant_id: str) -> dict[str, int]:
             for key in SYSTEMROLLEN[name]:
                 db.add(TeamrollePermission(teamrolle_id=rolle.id, permission_key=key))
         ergebnis[name] = rolle.id
+
+    db.commit()
+    return ergebnis
+
+
+def ensure_system_kpis(db, tenant_id: str) -> dict[str, int]:
+    """
+    Legt die initialen System-Kennzahlen für einen Tenant an (idempotent,
+    get-or-create) – analog zu ensure_systemrollen(). Gibt {key: kpi_id} zurück.
+    """
+    from estimateiq.angebot.models import KpiDefinition
+    from estimateiq.angebot.kpi_registry import SYSTEM_KPI_KATALOG
+
+    ergebnis: dict[str, int] = {}
+    for key, label, darstellungstyp, format_, required_permission in SYSTEM_KPI_KATALOG:
+        kpi = (
+            db.query(KpiDefinition)
+            .filter(KpiDefinition.tenant_id == tenant_id, KpiDefinition.key == key)
+            .first()
+        )
+        if kpi is None:
+            kpi = KpiDefinition(
+                tenant_id=tenant_id, key=key, label=label, is_system=True,
+                darstellungstyp=darstellungstyp, format=format_,
+                required_permission=required_permission,
+            )
+            db.add(kpi)
+            db.flush()
+        ergebnis[key] = kpi.id
 
     db.commit()
     return ergebnis

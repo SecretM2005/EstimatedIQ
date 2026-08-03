@@ -28,7 +28,7 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from estimateiq.angebot import config, models  # noqa: E402
-from estimateiq.angebot.database import Base, SessionLocal, engine, ensure_systemrollen  # noqa: E402
+from estimateiq.angebot.database import Base, SessionLocal, engine, ensure_systemrollen, ensure_system_kpis  # noqa: E402
 from estimateiq.api.main import app  # noqa: E402
 
 
@@ -46,6 +46,10 @@ class Helpers:
     # name → teamrolle_id, je Tenant. Wird von db_factory befüllt.
     teamrollen_a: dict[str, int] = {}
     teamrollen_b: dict[str, int] = {}
+
+    # key → kpi_id (System-KPIs), je Tenant. Wird von db_factory befüllt.
+    kpis_a: dict[str, int] = {}
+    kpis_b: dict[str, int] = {}
 
     @staticmethod
     def token(user_id: str) -> str:
@@ -91,6 +95,8 @@ def db_factory():
 
         Helpers.teamrollen_a = ensure_systemrollen(s, Helpers.TENANT_A)
         Helpers.teamrollen_b = ensure_systemrollen(s, Helpers.TENANT_B)
+        Helpers.kpis_a = ensure_system_kpis(s, Helpers.TENANT_A)
+        Helpers.kpis_b = ensure_system_kpis(s, Helpers.TENANT_B)
 
         s.add_all([
             models.TenantUser(

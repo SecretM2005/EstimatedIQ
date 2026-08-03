@@ -219,3 +219,86 @@ class AuditLogEintrag(Base):
     vorher: Mapped[str | None] = mapped_column(Text, nullable=True)   # JSON-Text
     nachher: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON-Text
     erstellt_am: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+# ── KPIs & Dashboard-Layout (RBAC Phase 2/3) ──────────────────────────────────
+
+class KpiDefinition(Base):
+    """
+    Eine Kennzahl: entweder System-KPI (is_system=True, Wert über einen fest
+    programmierten Resolver in kpi_registry.SYSTEM_KPI_RESOLVER berechnet)
+    oder Custom-KPI (generischer Builder: quelle/feld/aggregation/filters
+    gegen kpi_registry.REGISTRY validiert).
+    """
+    __tablename__ = "kpi_definitions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "key", name="uq_kpi_definitions_tenant_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    key: Mapped[str] = mapped_column(String(100), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    beschreibung: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Nur für Custom-KPIs (is_system=False) gesetzt.
+    quelle: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    feld: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    aggregation: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    filters_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    zeitraum_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    darstellungstyp: Mapped[str] = mapped_column(String(20), nullable=False, default="zahl")
+    format: Mapped[str | None] = mapped_column(String(20), nullable=True)  # eur|stunden|prozent|anzahl
+    # Ohne diese Permission ist der berechnete Wert serverseitig nicht Teil
+    # der Response (siehe Phase-1-Prinzip bei Marge-Feldern).
+    required_permission: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    erstellt_am: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    def get_filters(self) -> list[dict]:
+        return json.loads(self.filters_json) if self.filters_json else []
+
+    def set_filters(self, filters: list[dict]) -> None:
+        self.filters_json = json.dumps(filters) if filters else None
+
+    def get_zeitraum(self) -> dict | None:
+        return json.loads(self.zeitraum_json) if self.zeitraum_json else None
+
+    def set_zeitraum(self, zeitraum: dict | None) -> None:
+        self.zeitraum_json = json.dumps(zeitraum) if zeitraum else None
+
+
+class DashboardLayout(Base):
+    """
+    Layout pro Scope. scope_ref_id ist NIE NULL (Sentinel '' für
+    'tenant_default'), da NULL in einem Unique-Constraint auf Postgres/SQLite
+    nicht als Duplikat erkannt würde – mit '' funktioniert die Eindeutigkeit
+    (tenant_id, scope, scope_ref_id) echt.
+
+    Auflösungsreihenfolge beim Laden: user > role > tenant_default > Code-
+    seitiger Systemdefault (siehe router._standard_layout).
+    """
+    __tablename__ = "dashboard_layouts"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "scope", "scope_ref_id", name="uq_dashboard_layouts_scope"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)  # 'tenant_default' | 'role' | 'user'
+    scope_ref_id: Mapped[str] = mapped_column(String(36), nullable=False, default="")
+    layout_json: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    def get_layout(self) -> list[dict]:
+        return json.loads(self.layout_json)
+
+    def set_layout(self, layout: list[dict]) -> None:
+        self.layout_json = json.dumps(layout)
