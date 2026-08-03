@@ -79,6 +79,21 @@ export const vorlagUebernehmen     = (pId, referenzId) => api.post(`/projekte/${
 export const updateProjektStatus = (id, body) => api.patch(`/projekte/${id}/status`, body).then(r => r.data)
 export const getDashboardStats   = ()          => api.get('/dashboard/stats').then(r => r.data)
 
+// Dashboard-Layout (RBAC Phase 2/3)
+export const getDashboardLayout    = (alsRolleId) =>
+  api.get('/dashboard/layout', { params: alsRolleId ? { als_rolle_id: alsRolleId } : undefined }).then(r => r.data)
+export const putDashboardLayout    = (body)       => api.put('/dashboard/layout', body).then(r => r.data)
+export const deleteDashboardLayout = (scope, scopeRefId) =>
+  api.delete('/dashboard/layout', { params: { scope, scope_ref_id: scopeRefId } })
+
+// Kennzahlen (No-Code-KPI-Builder)
+export const getKpiRegistry      = ()         => api.get('/kpi-registry').then(r => r.data)
+export const getKpiDefinitionen  = ()         => api.get('/kpi-definitionen').then(r => r.data)
+export const createKpiDefinition = (body)     => api.post('/kpi-definitionen', body).then(r => r.data)
+export const updateKpiDefinition = (id, body) => api.patch(`/kpi-definitionen/${id}`, body).then(r => r.data)
+export const deleteKpiDefinition = (id)       => api.delete(`/kpi-definitionen/${id}`)
+export const previewKpi          = (body)     => api.post('/kpi-definitionen/vorschau', body).then(r => r.data)
+
 // Angebote (PDF)
 export const createAngebot    = (pId, b)   => api.post(`/projekte/${pId}/angebote`, b).then(r => r.data)
 // Lädt das PDF über axios (Bearer-Token via Interceptor) und öffnet es im neuen Tab

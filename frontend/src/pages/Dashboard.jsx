@@ -1,6 +1,275 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getDashboardStats, getProjekte } from '../api/angebot'
+import GridLayout, { WidthProvider } from 'react-grid-layout'
+import 'react-grid-layout/css/styles.css'
+import 'react-resizable/css/styles.css'
+import {
+  getDashboardStats, getProjekte, getDashboardLayout, putDashboardLayout, deleteDashboardLayout,
+  getKpiDefinitionen, getKpiRegistry, createKpiDefinition, getTeamrollen, getPermissions,
+} from '../api/angebot'
+import { useAuth } from '../auth/AuthProvider'
+import DashboardWidget from '../components/DashboardWidget'
+import KpiWizardModal from '../components/KpiWizardModal'
+
+const Grid = WidthProvider(GridLayout)
+
+function fehlerText(err) {
+  return err?.response?.data?.detail || 'Aktion fehlgeschlagen.'
+}
+
+const SCOPE_LABEL = { user: 'Nur für mich', role: 'Für meine Rolle', tenant_default: 'Für alle im Unternehmen' }
+
+/** Konfigurierbarer Kennzahlen-Bereich (RBAC Phase 2/3): löst das Layout serverseitig
+ * auf (user > role > tenant_default > Systemdefault) und rendert Widgets generisch. */
+function KennzahlenBereich() {
+  const { me } = useAuth()
+  const kannBearbeiten = !!me?.permissions?.includes('settings.manage_layout')
+
+  const [scopeUsed, setScopeUsed] = useState(null)
+  const [widgets, setWidgets] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  const [alsRolleId, setAlsRolleId] = useState('')
+  const [teamrollen, setTeamrollen] = useState([])
+
+  const [editMode, setEditMode] = useState(false)
+  const [entwurf, setEntwurf] = useState([])
+  const [editScope, setEditScope] = useState('tenant_default')
+  const [saving, setSaving] = useState(false)
+
+  const [kpiDefinitionen, setKpiDefinitionen] = useState([])
+  const [katalog, setKatalog] = useState(null)
+  const [permissionsListe, setPermissionsListe] = useState([])
+  const [zeigeKpiPicker, setZeigeKpiPicker] = useState(false)
+  const [zeigeWizard, setZeigeWizard] = useState(false)
+  const [wizardFehler, setWizardFehler] = useState(null)
+
+  const ladeLayout = (rolleId) => {
+    setLoading(true); setError(null)
+    return getDashboardLayout(rolleId || undefined)
+      .then(r => { setScopeUsed(r.scope_used); setWidgets(r.widgets) })
+      .catch(err => setError(fehlerText(err)))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { ladeLayout(alsRolleId) }, [alsRolleId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!kannBearbeiten) return
+    getTeamrollen().then(setTeamrollen).catch(() => setTeamrollen([]))
+  }, [kannBearbeiten])
+
+  const beginneBearbeitung = () => {
+    setAlsRolleId('')
+    setEntwurf(widgets.map(w => ({ ...w })))
+    setEditMode(true)
+    Promise.all([
+      getKpiDefinitionen().catch(() => []),
+      getKpiRegistry().catch(() => null),
+      getPermissions().catch(() => []),
+    ]).then(([kpis, kat, perms]) => {
+      setKpiDefinitionen(kpis)
+      setKatalog(kat)
+      setPermissionsListe(perms)
+    })
+  }
+
+  const beendeBearbeitung = () => {
+    setEditMode(false)
+    setZeigeKpiPicker(false)
+    setZeigeWizard(false)
+  }
+
+  const handleLayoutChange = (neuesLayout) => {
+    setEntwurf(prev => prev.map(w => {
+      const pos = neuesLayout.find(l => l.i === String(w.kpi_id))
+      return pos ? { ...w, x: pos.x, y: pos.y, w: pos.w, h: pos.h } : w
+    }))
+  }
+
+  const entferneWidget = (kpiId) => setEntwurf(prev => prev.filter(w => w.kpi_id !== kpiId))
+
+  const naechsteY = () => entwurf.reduce((max, w) => Math.max(max, w.y + w.h), 0)
+
+  const fuegeKpiHinzu = (kpi) => {
+    setEntwurf(prev => [...prev, {
+      kpi_id: kpi.id, key: kpi.key, label: kpi.label, darstellungstyp: kpi.darstellungstyp,
+      format: kpi.format, x: 0, y: naechsteY(), w: 1, h: kpi.darstellungstyp === 'tabelle' ? 2 : 1,
+      typ: kpi.darstellungstyp === 'tabelle' ? 'tabelle' : 'zahl', wert: null, zeilen: [],
+    }])
+    setZeigeKpiPicker(false)
+  }
+
+  const handleWizardSave = async (body) => {
+    const neu = await createKpiDefinition(body)
+    setKpiDefinitionen(prev => [...prev, neu])
+    fuegeKpiHinzu(neu)
+    setZeigeWizard(false)
+  }
+
+  const speichern = async () => {
+    setSaving(true); setError(null)
+    try {
+      const scopeRefId = editScope === 'role' ? String(me.teamrolle_id) : undefined
+      await putDashboardLayout({
+        scope: editScope, scope_ref_id: scopeRefId,
+        layout: entwurf.map(w => ({ kpi_id: w.kpi_id, x: w.x, y: w.y, w: w.w, h: w.h })),
+      })
+      beendeBearbeitung()
+      await ladeLayout()
+    } catch (err) {
+      setError(fehlerText(err))
+    } finally { setSaving(false) }
+  }
+
+  const zuruecksetzen = async () => {
+    if (!confirm('Layout für diesen Bereich auf den Standard zurücksetzen?')) return
+    setSaving(true); setError(null)
+    try {
+      const scopeRefId = editScope === 'role' ? String(me.teamrolle_id) : undefined
+      await deleteDashboardLayout(editScope, scopeRefId)
+      beendeBearbeitung()
+      await ladeLayout()
+    } catch (err) {
+      setError(fehlerText(err))
+    } finally { setSaving(false) }
+  }
+
+  const anzeigeWidgets = editMode ? entwurf : widgets
+  const verfuegbareKpis = kpiDefinitionen.filter(k => !entwurf.some(w => w.kpi_id === k.id))
+  const layoutProp = useMemo(
+    () => anzeigeWidgets.map(w => ({ i: String(w.kpi_id), x: w.x, y: w.y, w: w.w, h: w.h, static: !editMode })),
+    [anzeigeWidgets, editMode],
+  )
+
+  return (
+    <div className="mb-6">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <h2 className="text-[13px] font-semibold text-slate-500 uppercase tracking-[0.05em]">Kennzahlen</h2>
+          {scopeUsed && scopeUsed !== 'system_default' && !editMode && (
+            <span className="text-[10.5px] font-medium text-slate-400 bg-slate-100 rounded-full px-2 py-0.5">
+              {scopeUsed === 'user' ? 'Eigenes Layout' : scopeUsed === 'role' ? 'Rollen-Layout' : 'Firmen-Standard'}
+            </span>
+          )}
+        </div>
+
+        {kannBearbeiten && (
+          <div className="flex items-center gap-2">
+            {!editMode && (
+              <select
+                value={alsRolleId}
+                onChange={e => setAlsRolleId(e.target.value)}
+                className="h-8 px-2 border border-slate-200 rounded-lg text-[12px] bg-white text-slate-600"
+              >
+                <option value="">Meine Ansicht</option>
+                {teamrollen.map(r => <option key={r.id} value={r.id}>Ansehen als: {r.name}</option>)}
+              </select>
+            )}
+            {editMode ? (
+              <>
+                <select value={editScope} onChange={e => setEditScope(e.target.value)}
+                  className="h-8 px-2 border border-slate-200 rounded-lg text-[12px] bg-white text-slate-600">
+                  {Object.entries(SCOPE_LABEL)
+                    .filter(([v]) => v !== 'role' || me?.teamrolle_id)
+                    .map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+                <button onClick={() => setZeigeKpiPicker(p => !p)}
+                  className="h-8 px-3 border border-slate-200 rounded-lg text-[12px] font-medium text-slate-700 hover:bg-slate-50">
+                  + Kennzahl
+                </button>
+                <button onClick={zuruecksetzen} disabled={saving}
+                  className="h-8 px-3 text-[12px] font-medium text-slate-400 hover:text-red-600">
+                  Auf Standard zurücksetzen
+                </button>
+                <button onClick={beendeBearbeitung} disabled={saving}
+                  className="h-8 px-3 text-[12px] font-medium text-slate-500 hover:text-slate-800">
+                  Abbrechen
+                </button>
+                <button onClick={speichern} disabled={saving}
+                  className="h-8 px-3 bg-accent hover:bg-accent-hover text-white rounded-lg text-[12px] font-semibold">
+                  {saving ? 'Speichert…' : 'Speichern'}
+                </button>
+              </>
+            ) : (
+              <button onClick={beginneBearbeitung}
+                className="h-8 px-3 border border-slate-200 rounded-lg text-[12px] font-medium text-slate-700 hover:bg-slate-50">
+                Anpassen
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {editMode && zeigeKpiPicker && (
+        <div className="mb-3 bg-white border border-slate-200 rounded-xl shadow-xs p-3">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[11.5px] font-semibold text-slate-600">Vorhandene Kennzahl hinzufügen</p>
+            <button onClick={() => { setZeigeWizard(true); setZeigeKpiPicker(false) }}
+              className="text-[12px] text-accent hover:text-accent-hover font-medium">
+              + Neue Kennzahl erstellen
+            </button>
+          </div>
+          {verfuegbareKpis.length === 0 ? (
+            <p className="text-[12.5px] text-slate-400">Keine weiteren Kennzahlen verfügbar.</p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {verfuegbareKpis.map(k => (
+                <button key={k.id} onClick={() => fuegeKpiHinzu(k)}
+                  className="h-7 px-2.5 border border-slate-200 rounded-md text-[12px] text-slate-700 hover:bg-slate-50">
+                  {k.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {zeigeWizard && katalog && (
+        <KpiWizardModal
+          katalog={katalog}
+          permissionsListe={permissionsListe}
+          onCancel={() => setZeigeWizard(false)}
+          onSave={async (body) => {
+            try { await handleWizardSave(body) }
+            catch (err) { setWizardFehler(fehlerText(err)); throw err }
+          }}
+        />
+      )}
+      {wizardFehler && <p className="text-[12.5px] text-red-600 mb-2">{wizardFehler}</p>}
+
+      {error && <p className="text-[12.5px] text-red-600 mb-2">{error}</p>}
+
+      {loading ? (
+        <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          {[0, 1, 2, 3].map(i => <div key={i} className="h-[104px] bg-slate-100 rounded-xl animate-pulse" />)}
+        </div>
+      ) : anzeigeWidgets.length === 0 ? (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-xs px-5 py-8 text-center">
+          <p className="text-[13px] text-slate-400">Keine Kennzahlen konfiguriert.</p>
+        </div>
+      ) : (
+        <Grid
+          layout={layoutProp}
+          cols={4}
+          rowHeight={110}
+          margin={[16, 16]}
+          isDraggable={editMode}
+          isResizable={editMode}
+          onLayoutChange={editMode ? handleLayoutChange : undefined}
+          compactType="vertical"
+        >
+          {anzeigeWidgets.map(w => (
+            <div key={w.kpi_id}>
+              <DashboardWidget widget={w} editMode={editMode} onRemove={() => entferneWidget(w.kpi_id)} />
+            </div>
+          ))}
+        </Grid>
+      )}
+    </div>
+  )
+}
 
 const fmtEUR = n =>
   new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n)
@@ -28,14 +297,6 @@ function StatusPill({ status }) {
       fontSize: 11, fontWeight: 600, borderRadius: 999,
       background: s.bg, color: s.color, border: `1px solid ${s.border}`, whiteSpace: 'nowrap',
     }}>{s.label}</span>
-  )
-}
-
-function Sparkline({ color = '#6366f1', points = '0 28 18 22 36 16 54 10 72 8 90 4' }) {
-  return (
-    <svg width="90" height="36" viewBox="0 0 90 36" fill="none" style={{ opacity: 0.55 }}>
-      <polyline points={points} stroke={color} strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
   )
 }
 
@@ -95,16 +356,6 @@ export default function Dashboard() {
   const n_verloren   = abgelehnte.length
   const gewinnrate   = stats.gewinnrate
 
-  const soll_h = laufendeProjekte.reduce((s, p) => s + p.soll_stunden_gesamt, 0)
-  const ist_h  = laufendeProjekte.reduce((s, p) => s + p.ist_stunden_gesamt,  0)
-  const ist_vs_soll_pct = soll_h > 0 ? (ist_h / soll_h * 100) : null
-  const n_ueber_soll    = laufendeProjekte.filter(p => p.soll_stunden_gesamt > 0 && p.ist_stunden_gesamt > p.soll_stunden_gesamt).length
-
-  const margenPs  = laufendeProjekte.filter(p => p.auftragswert > 0 && p.soll_kosten > 0)
-  const avg_marge = margenPs.length > 0
-    ? margenPs.reduce((s, p) => s + (p.auftragswert - p.soll_kosten) / p.auftragswert * 100, 0) / margenPs.length
-    : null
-
   const heute = new Date().toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' })
 
   return (
@@ -129,75 +380,8 @@ export default function Dashboard() {
         </Link>
       </div>
 
-      {/* ── KPI cards ── */}
-      <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
-        {/* Offene Angebote */}
-        <div className="bg-white border border-slate-200 rounded-xl px-5 py-4 shadow-xs">
-          <p className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-slate-400 mb-3">Offene Angebote</p>
-          <div className="flex items-end justify-between gap-2">
-            <div>
-              <p className="text-[30px] font-bold text-slate-900 leading-none tabular-nums">{offeneAngebote.length}</p>
-              <p className="text-[12px] text-slate-400 mt-1.5">{fmtEUR(wertOffen)} offen</p>
-            </div>
-            <Sparkline color="#6366f1" />
-          </div>
-        </div>
-
-        {/* Trefferquote */}
-        <div className="bg-white border border-slate-200 rounded-xl px-5 py-4 shadow-xs">
-          <p className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-slate-400 mb-3">Trefferquote</p>
-          <div className="flex items-end justify-between gap-2">
-            <div>
-              <p className="text-[30px] font-bold text-slate-900 leading-none tabular-nums">
-                {gewinnrate != null ? `${Math.round(gewinnrate * 100)} %` : '–'}
-              </p>
-              <p className="text-[12px] text-slate-400 mt-1.5">{n_gewonnen} gew. · {n_verloren} verl.</p>
-            </div>
-            <Sparkline color="#10b981" points="0 28 18 24 36 20 54 14 72 10 90 6" />
-          </div>
-        </div>
-
-        {/* Ø Marge Laufend */}
-        <div className="bg-white border border-slate-200 rounded-xl px-5 py-4 shadow-xs">
-          <p className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-slate-400 mb-3">Ø Marge Laufend</p>
-          <div className="flex items-end justify-between gap-2">
-            <div>
-              <p className="text-[30px] font-bold text-slate-900 leading-none tabular-nums">
-                {avg_marge != null ? `${avg_marge.toFixed(1)} %` : '–'}
-              </p>
-              <p className="text-[12px] text-slate-400 mt-1.5">
-                {margenPs.length > 0 ? `${margenPs.length} Projekte mit Wert` : 'Kein Auftragswert'}
-              </p>
-            </div>
-            <Sparkline color="#0f766e" points="0 30 18 26 36 22 54 18 72 14 90 10" />
-          </div>
-        </div>
-
-        {/* Ist vs. Soll */}
-        <div className="bg-white border border-slate-200 rounded-xl px-5 py-4 shadow-xs">
-          <p className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-slate-400 mb-3">Ist vs. Soll (Std)</p>
-          <div className="flex items-end justify-between gap-2">
-            <div>
-              <p className={`text-[30px] font-bold leading-none tabular-nums ${
-                ist_vs_soll_pct != null && ist_vs_soll_pct > 100 ? 'text-amber-600' : 'text-slate-900'
-              }`}>
-                {ist_vs_soll_pct != null ? `${Math.round(ist_vs_soll_pct)} %` : '–'}
-              </p>
-              <p className="text-[12px] text-slate-400 mt-1.5">
-                {n_ueber_soll > 0
-                  ? `${n_ueber_soll} Projekt${n_ueber_soll !== 1 ? 'e' : ''} über Soll`
-                  : laufendeProjekte.length > 0 ? 'Alle im Soll' : 'Keine laufenden Projekte'}
-              </p>
-            </div>
-            <Sparkline
-              color={ist_vs_soll_pct != null && ist_vs_soll_pct > 100 ? '#f59e0b' : '#6366f1'}
-              points={ist_vs_soll_pct != null && ist_vs_soll_pct > 100
-                ? '0 4 18 8 36 12 54 18 72 22 90 28'
-                : '0 28 18 22 36 16 54 10 72 8 90 4'}
-            />
-          </div>
-        </div>
-      </div>
+      {/* ── Kennzahlen (No-Code-KPI-Builder, konfigurierbar) ── */}
+      <KennzahlenBereich />
 
       {/* ── Main grid ── */}
       <div className="grid xl:grid-cols-[1fr_340px] gap-5">
