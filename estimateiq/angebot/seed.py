@@ -22,7 +22,7 @@ from __future__ import annotations
 import sys
 
 from estimateiq.angebot import config
-from estimateiq.angebot.database import SessionLocal, init_db, ensure_systemrollen
+from estimateiq.angebot.database import SessionLocal, init_db, ensure_systemrollen, ensure_system_kpis
 from estimateiq.angebot.models import (
     Angebot, Leistungsposition, Projekt, Rolle, Tenant, TenantUser,
 )
@@ -325,6 +325,9 @@ def seed(reset: bool = False) -> None:
         # bevor ein Benutzer zugeordnet werden kann (teamrolle_id ist NOT NULL).
         # Unabhängig von der automatischen Login-User-Anlage weiter unten.
         teamrollen_map = ensure_systemrollen(db, tenant.id)
+        # System-Kennzahlen (Phase 2/3) – idempotent, für den Demo-Tenant im
+        # Supabase-Modus nötig, da init_db() dort keinen Dev-Tenant-Bootstrap läuft.
+        ensure_system_kpis(db, tenant.id)
 
         rollen_map = _seed_rollen(db, tenant.id)
         angelegt = _seed_projekte(db, tenant.id, rollen_map, embed, embed_batch)
